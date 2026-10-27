@@ -80,4 +80,5 @@ Vedi `CONTRIBUTING.md` per le regole complete.
 ## RUNNARE SERVER DASHBOARD
 
 pip install -r requirements.txt
+
 streamlit run app.py
