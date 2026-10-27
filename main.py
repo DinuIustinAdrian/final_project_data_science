@@ -1,7 +1,12 @@
 import os
+import numpy as np
+import matplotlib.pyplot as plt
+import plotly.express as px
 import pandas as pd
-import streamlit as st
 
-path_file = 'Student_Depression_Dataset.csv'
-df = pd.read_csv(path_file)
+# Caricamento dati
 
+dataset = 'Student_Depression_Dataset.csv'
+df = pd.read_csv(dataset)
+
+print(df.columns.values)
