@@ -9,4 +9,13 @@ import pandas as pd
 dataset = 'Student_Depression_Dataset.csv'
 df = pd.read_csv(dataset)
 
-print(df.columns.values)
+### ANALISI DATI ####
+
+### Generazione Plot ####
+
+### MODELLI VARI
+
+### Report Finale nella forma da decidere 
+
+
+
