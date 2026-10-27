@@ -75,3 +75,9 @@ Vedi `CONTRIBUTING.md` per le regole complete.
 - **`gh: command not found`**: esegui `brew install gh`.
 - **`Repository not found`**: non hai ancora accesso, vedi il punto 5.
 - **Il comando `code` non funziona**: ripeti il punto 6.1.
+
+
+## RUNNARE SERVER DASHBOARD
+
+pip install -r requirements.txt
+streamlit run app.py
