@@ -102,7 +102,7 @@ plt.tight_layout()
 plt.savefig("plot_AgeDistribution_Gender.svg", format="svg", bbox_inches="tight")
 
 
-### PLOT Age Distribution by Gender ### 
+### PLOT Depression status by studends ### 
 
 depression_counts = df["Depression"].value_counts()
 
@@ -174,7 +174,7 @@ def plot_depression_comparison(column, title=None):
     ax.tick_params(axis="x", rotation=0)
     ax.legend(title="Depression")
     ax.grid(axis="y", alpha=0.8)
-    plt.savefig("plot_"+column+"_Depression.svg", format="svg", bbox_inches="tight")
+    plt.savefig("plot_"+column+"_vs_Depression.svg", format="svg", bbox_inches="tight")
 
 plot_depression_comparison("Family_background")
 plot_depression_comparison("Relationship_status")
