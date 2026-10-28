@@ -183,6 +183,8 @@ plot_depression_comparison("Family_background")
 plot_depression_comparison("Relationship_status")
 plot_depression_comparison("Marital_status")
 plot_depression_comparison("Living_style")
+plot_depression_comparison("Health_condition")
+plot_depression_comparison("friend_circle")
 
 ### STATISTICHE SULLA DEPRESSIONE IN BASE ALLE SOTTOCATEGORIE
 
@@ -238,4 +240,230 @@ association_table = pd.DataFrame(association_results)
 association_table = tabulate(association_table, headers="keys", tablefmt="rounded_grid", floatfmt=".3f")
 logToFile('\n### TEST CHI QUADRO E V-CRAMER','debug.txt')
 logToFile(association_table, 'debug.txt')
+
+
+### CONDIZIONE DI SALUTE VS DEPRESSIONE
+
+health_table = pd.crosstab(
+    df["Health_condition"], df["Depression"], margins=True
+)
+
+health_table["Tasso_depressione (%)"] = (
+    health_table["Yes"] / health_table["All"] * 100
+).round(2)
+
+health_table = tabulate(
+    health_table, headers="keys", tablefmt="rounded_grid"
+)
+
+logToFile("\n### CONDIZIONE DI SALUTE VS DEPRESSIONE", "debug.txt")
+logToFile(health_table, "debug.txt")
+
+
+### CONDIZIONE DI SALUTE VS DEPRESSIONE
+
+health_table = pd.crosstab(
+    df["Health_condition"], df["Depression"], margins=True
+)
+
+health_table["Tasso_depressione (%)"] = (
+    health_table["Yes"] / health_table["All"] * 100
+).round(2)
+
+health_table = tabulate(
+    health_table, headers="keys", tablefmt="rounded_grid"
+)
+
+logToFile("\n### CONDIZIONE DI SALUTE VS DEPRESSIONE", "debug.txt")
+logToFile(health_table, "debug.txt")
+
+
+### STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE
+
+rate = pd.crosstab(
+    df["Relationship_status"], df["friend_circle"],
+    values=(df["Depression"] == "Yes"), aggfunc="mean"
+).mul(100)
+
+n = pd.crosstab(df["Relationship_status"], df["friend_circle"])
+
+labels = rate.round(1).astype(str) + "%\n(n=" + n.astype(str) + ")"
+
+fig, ax = plt.subplots(figsize=(8, 6))
+
+sns.heatmap(
+    rate, annot=labels, fmt="", cmap="Oranges",
+    cbar_kws={"label": "Tasso di depressione (%)"}, ax=ax
+)
+
+ax.set_title("Depression by Relationship Status and Friend Circle")
+ax.set_xlabel("Friend Circle")
+ax.set_ylabel("Relationship Status")
+
+plt.tight_layout()
+plt.savefig("plot_Relationship_FriendCircle.svg", format="svg", bbox_inches="tight")
+
+
+### STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE ###
+
+friend_results = []
+relationship_groups = df["Relationship_status"].dropna().unique()
+
+for group in relationship_groups:
+    subset = df[df["Relationship_status"] == group]
+
+    rate_yes = (subset.loc[subset["friend_circle"] == "Yes", "Depression"] == "Yes").mean() * 100
+    rate_no = (subset.loc[subset["friend_circle"] == "No", "Depression"] == "Yes").mean() * 100
+
+    table = pd.crosstab(subset["friend_circle"], subset["Depression"])
+    p = chi2_contingency(table)[1] if table.shape[0] > 1 and table.shape[1] > 1 else np.nan
+
+    friend_results.append({
+        "Relationship_status": group,
+        "Students": len(subset),
+        "Rate (friends)": round(rate_yes, 1),
+        "Rate (no friends)": round(rate_no, 1),
+        "Difference": round(rate_no - rate_yes, 1),
+        "P-value": p,
+        "P-value (corrected)": min(p * len(relationship_groups), 1) if pd.notna(p) else np.nan
+    })
+
+friend_table = pd.DataFrame(friend_results).sort_values("Students", ascending=False)
+
+for col in ["P-value", "P-value (corrected)"]:
+    friend_table[col] = friend_table[col].map(
+        lambda p: "< 0.001" if p < 0.001 else f"{p:.3f}" if pd.notna(p) else "N/A"
+    )
+
+friend_table = tabulate(friend_table, headers="keys", tablefmt="rounded_grid", showindex=False)
+
+logToFile("\n### STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE", "debug.txt")
+logToFile(friend_table, "debug.txt")
+
+
+# COSTI EXTRA-STUDIO E DEPRESSIONE #
+
+df["Cost_quintile"] = pd.qcut(
+    df["Cost_without_study"],
+    q=5,
+    labels=["Q1 (più basso)", "Q2", "Q3", "Q4", "Q5 (più alto)"]
+)
+
+cost_rates = (
+    df.groupby("Cost_quintile", observed=True)["Depression"]
+    .agg(
+        Students="size",
+        Rate=lambda x: (x == "Yes").mean() * 100
+    )
+    .reset_index()
+)
+
+# Tabella dei risultati
+cost_table = cost_rates.copy()
+cost_table["Rate (%)"] = cost_table["Rate"].round(2)
+cost_table = cost_table.drop(columns="Rate")
+
+cost_table = tabulate(
+    cost_table,
+    headers="keys",
+    tablefmt="rounded_grid",
+    showindex=False
+)
+
+logToFile("\n### COSTI EXTRA-STUDIO E DEPRESSIONE", "debug.txt")
+logToFile(cost_table, "debug.txt")
+
+# Grafico
+fig, ax = plt.subplots(figsize=(9, 5))
+
+sns.barplot(
+    data=cost_rates,
+    x="Cost_quintile",
+    y="Rate",
+    color="tab:orange",
+    ax=ax
+)
+
+# Tasso complessivo di depressione
+overall_rate = (df["Depression"] == "Yes").mean() * 100
+
+ax.axhline(
+    overall_rate,
+    color="gray",
+    linestyle="--",
+    label=f"Tasso complessivo ({overall_rate:.1f}%)"
+)
+
+ax.bar_label(ax.containers[0], fmt="%.1f%%", padding=3)
+ax.set_title("Tasso di depressione per gruppo di costo extra-studio")
+ax.set_xlabel("Costo extra-studio (quintili)")
+ax.set_ylabel("Percentuale di studenti con depressione")
+ax.legend()
+
+
+plt.tight_layout()
+plt.savefig("plot_extra_studio_vs_depressione.svg")
+plt.close()
+
+
+# TEST STATISTICO: QUINTILI DI COSTO E DEPRESSIONE #
+
+quintile_results = []
+
+for q in df["Cost_quintile"].cat.categories:
+    in_group = df["Cost_quintile"] == q
+
+    rate_in = (df.loc[in_group, "Depression"] == "Yes").mean() * 100
+    rate_out = (df.loc[~in_group, "Depression"] == "Yes").mean() * 100
+
+    table = pd.crosstab(in_group, df["Depression"])
+    p_value = chi2_contingency(table)[1]
+
+    quintile_results.append({
+        "Quintile": q,
+        "Rate (quintile %)": round(rate_in, 1),
+        "Rate (others %)": round(rate_out, 1),
+        "P-value": p_value,
+        "P-value (corrected)": min(p_value * 5, 1)
+    })
+
+quintile_table = pd.DataFrame(quintile_results)
+
+for col in ["P-value", "P-value (corrected)"]:
+    quintile_table[col] = quintile_table[col].map(
+        lambda p: "< 0.001" if p < 0.001 else f"{p:.3f}"
+    )
+
+quintile_table = tabulate(
+    quintile_table,
+    headers="keys",
+    tablefmt="rounded_grid",
+    showindex=False
+)
+
+logToFile("\n### TEST STATISTICO: QUINTILI DI COSTO E DEPRESSIONE", "debug.txt")
+logToFile(quintile_table, "debug.txt")
+
+
+# COSTO E CLASSE SOCIALE #
+
+median_cost = df.groupby("Family_background")["Cost_without_study"].median()
+class_counts = pd.crosstab(df["Cost_quintile"], df["Family_background"])
+class_rates = pd.crosstab(
+    df["Cost_quintile"], df["Family_background"],
+    values=df["Depression"].eq("Yes"), aggfunc="mean"
+).mul(100)
+
+
+class_rates = class_rates.round(1).astype(str) + "%"
+class_rates = class_rates.mask(class_counts < 20, class_rates + "!")
+
+for titolo, tabella in [
+    ("Tasso di depressione (%)", class_rates),
+    ("Tasso di depression N studenti", class_counts)
+]:
+    logToFile(f"\n### {titolo.upper()}", "debug.txt")
+    logToFile(tabulate(tabella, headers="keys", tablefmt="rounded_grid", stralign="right"), "debug.txt")
+
+
 
