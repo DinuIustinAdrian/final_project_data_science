@@ -19,7 +19,7 @@ from tabulate import tabulate
 warnings.filterwarnings("ignore")
 
 from scipy.stats import mannwhitneyu
-
+from statsmodels.stats.proportion import proportion_confint
 
 from scipy.stats import chi2_contingency
 
@@ -647,3 +647,117 @@ ax.legend()
 plt.tight_layout()
 plt.savefig("plot_cgpa_quintili_depressione.svg")
 plt.close()
+
+
+### TEST CHI-QUADRO E V DI CRAMÉR #
+
+cgpa_table = pd.crosstab(df["CGPA_quintile"], df["Depression"])
+chi2_cg, p_cg, dof_cg, _ = chi2_contingency(cgpa_table)
+n_cg = cgpa_table.to_numpy().sum()
+v_cg = np.sqrt(chi2_cg / (n_cg * min(cgpa_table.shape[0]-1, cgpa_table.shape[1]-1)))
+
+cgpa_results = []
+
+for q in df["CGPA_quintile"].cat.categories:
+    mask = df["CGPA_quintile"] == q
+    p = chi2_contingency(pd.crosstab(mask, df["Depression"]))[1]
+    cgpa_results.append({
+        "Quintile": q,
+        "Rate (%)": (df.loc[mask, "Depression"] == "Yes").mean() * 100,
+        "Rate others (%)": (df.loc[~mask, "Depression"] == "Yes").mean() * 100,
+        "P-value": p,
+        "P-value corr.": min(p * 5, 1),
+        "V di Cramér": np.nan
+    })
+
+cgpa_results.extend([
+    {"Quintile": "Test complessivo", "P-value": p_cg, "V di Cramér": np.nan},
+    {"Quintile": "V di Cramér", "V di Cramér": v_cg}
+])
+
+cgpa_quintile_table = pd.DataFrame(cgpa_results)
+
+for col in ["P-value", "P-value corr."]:
+    cgpa_quintile_table[col] = cgpa_quintile_table[col].map(
+        lambda p: "< 0.001" if pd.notna(p) and p < 0.001 else f"{p:.3f}" if pd.notna(p) else "-"
+    )
+
+logToFile(tabulate(cgpa_quintile_table.fillna("-"), headers="keys",
+                   tablefmt="rounded_grid", showindex=False), "debug.txt")
+
+
+
+# CORRELAZIONE DI SPEARMAN #
+
+numeric_corr = df[numeric_columns].corr(method="spearman").round(2)
+
+tabella_corr = numeric_corr.copy()
+tabella_corr.insert(0, "Metodo", "Spearman")
+
+logToFile(tabulate(
+    tabella_corr, headers="keys", tablefmt="rounded_grid"
+), "debug.txt")
+
+fig, ax = plt.subplots(figsize=(9, 7))
+
+sns.heatmap(
+    numeric_corr,
+    annot=True,
+    fmt=".2f",
+    cmap="coolwarm",
+    vmin=-1,
+    vmax=1,
+    square=True,
+    linewidths=0.8,
+    annot_kws={"size": 12},
+    ax=ax
+)
+
+ax.set_title("Correlazione di Spearman tra le variabili numeriche", pad=20)
+ax.tick_params(axis="x", rotation=30, labelsize=11)
+ax.tick_params(axis="y", rotation=0, labelsize=11)
+
+plt.tight_layout()
+plt.savefig("plot_correlazione_spearman.svg", bbox_inches="tight")
+plt.close()
+
+
+
+### PROFILI DIVERSI DI STUDENTI IN BASE ALLE VARIE CATEGORIE #
+
+profile_columns = ["Relationship_status", "friend_circle", "Family_background", "Living_style"]
+
+profile_summary = (
+    df.groupby(profile_columns, observed=True)
+    .agg(
+        Total_Students=("Depression", "size"),
+        Depression_Count=("Depression", lambda x: (x == "Yes").sum())
+    )
+    .reset_index()
+)
+
+logToFile(f"Profili totali: {len(profile_summary)}", "debug.txt")
+
+profile_summary = profile_summary[profile_summary["Total_Students"] >= 20].copy()
+logToFile(f"Profili con almeno 20 studenti: {len(profile_summary)}", "debug.txt")
+
+profile_summary["Depression_Rate"] = (
+    profile_summary["Depression_Count"] / profile_summary["Total_Students"] * 100
+)
+
+ci_low, ci_high = proportion_confint(
+    profile_summary["Depression_Count"],
+    profile_summary["Total_Students"],
+    method="wilson"
+)
+
+profile_summary["CI_low"] = ci_low * 100
+profile_summary["CI_high"] = ci_high * 100
+
+profile_summary[["Depression_Rate", "CI_low", "CI_high"]] = (
+    profile_summary[["Depression_Rate", "CI_low", "CI_high"]].round(2)
+)
+
+profile_summary = profile_summary.sort_values("Depression_Rate", ascending=False)
+
+logToFile(tabulate(profile_summary.head(10),headers="keys",tablefmt="rounded_grid",showindex=False), "debug.txt")
