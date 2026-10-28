@@ -1,43 +1,30 @@
 ### Import delle librerie
-
 import os
+import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import warnings
-warnings.filterwarnings('ignore')
-from sklearn.model_selection import train_test_split
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
-import warnings
-from tabulate import tabulate
-warnings.filterwarnings("ignore")
-
-from scipy.stats import mannwhitneyu
+from scipy.stats import chi2_contingency, mannwhitneyu
 from statsmodels.stats.proportion import proportion_confint
-
-from scipy.stats import chi2_contingency
-
+from tabulate import tabulate
 
 plt.style.use("fivethirtyeight")
 
 def logToFile(data, output):
-    '''
-    
-    '''
     print(data)
     if output != None:
         with open(output, 'a', encoding='utf-8') as file:
             file.write(data + '\n')
 
+### DICHIARAZIONE FILE DI LOG E PLOT
+pathDebug = 'data/debug/log.txt'
+pathPlots = 'data/plots/'
+
 ### Pulizia file di log
-if os.path.exists("debug.txt"):
-    os.remove('debug.txt')
+
+if os.path.exists(pathDebug):
+    os.remove(pathDebug)
 
 ### Import dei file
 
@@ -49,15 +36,15 @@ df = pd.read_csv(path_file)
 colMissing = df.isna().sum().to_frame(name='Valori mancanti')
 colMissing = tabulate(colMissing, headers="keys", tablefmt='rounded_grid')
 
-logToFile('\n### ANALISI DATI MANCANTI', 'debug.txt')
-logToFile(colMissing, 'debug.txt')
+logToFile('\n### ANALISI DATI MANCANTI', pathDebug)
+logToFile(colMissing, pathDebug)
 
 
 stats = df.describe()
 stats = tabulate(stats, headers="keys", tablefmt="rounded_grid", floatfmt=".2f")
 
-logToFile('\n### Analisi statistica colonne numeriche', 'debug.txt')
-logToFile(stats, 'debug.txt')
+logToFile('\n### Analisi statistica colonne numeriche', pathDebug)
+logToFile(stats, pathDebug)
 
 
 # Coerenza logica: relazione e stato civile
@@ -104,7 +91,7 @@ ax2.set_ylabel("Density")
 
 plt.tight_layout()
 
-plt.savefig("plot_AgeDistribution_Gender.svg", format="svg", bbox_inches="tight")
+plt.savefig(pathPlots+"plot_AgeDistribution_Gender.svg", format="svg", bbox_inches="tight")
 
 
 ### PLOT Depression status by studends ### 
@@ -147,7 +134,7 @@ ax.set_ylabel("Number of Students")
 ax.set_ylim(top=ax.get_ylim()[1] * 1.15)
 
 plt.tight_layout()
-plt.savefig("plot_DepressionStatus.svg", format="svg", bbox_inches="tight")
+plt.savefig(pathPlots+"plot_DepressionStatus.svg", format="svg", bbox_inches="tight")
 
 
 ### Plot depressione in base a categoria
@@ -179,7 +166,7 @@ def plot_depression_comparison(column, title=None):
     ax.tick_params(axis="x", rotation=0)
     ax.legend(title="Depression")
     ax.grid(axis="y", alpha=0.8)
-    plt.savefig("plot_"+column+"_vs_Depression.svg", format="svg", bbox_inches="tight")
+    plt.savefig(pathPlots+"plot_"+column+"_vs_Depression.svg", format="svg", bbox_inches="tight")
 
 plot_depression_comparison("Family_background")
 plot_depression_comparison("Relationship_status")
@@ -217,8 +204,8 @@ depression_rates = depression_rates[
 
 depression_rates["Depression_Rate"] = depression_rates["Depression_Rate"].round(2)
 depression_rates = tabulate(depression_rates, headers="keys", tablefmt="rounded_grid", floatfmt=".2f")
-logToFile('\n### STATISTICHE SULLA DEPRESSIONE IN BASE ALLE SOTTOCATEGORIE','debug.txt')
-logToFile(depression_rates, 'debug.txt')
+logToFile('\n### STATISTICHE SULLA DEPRESSIONE IN BASE ALLE SOTTOCATEGORIE',pathDebug)
+logToFile(depression_rates, pathDebug)
 
 
 ### TEST CHI QUADRO E V-CRAMER
@@ -240,8 +227,8 @@ for col in categorical_columns:
 
 association_table = pd.DataFrame(association_results)
 association_table = tabulate(association_table, headers="keys", tablefmt="rounded_grid", floatfmt=".3f")
-logToFile('\n### TEST CHI QUADRO E V-CRAMER','debug.txt')
-logToFile(association_table, 'debug.txt')
+logToFile('\n### TEST CHI QUADRO E V-CRAMER',pathDebug)
+logToFile(association_table, pathDebug)
 
 
 ### CONDIZIONE DI SALUTE VS DEPRESSIONE
@@ -258,8 +245,8 @@ health_table = tabulate(
     health_table, headers="keys", tablefmt="rounded_grid"
 )
 
-logToFile("\n### CONDIZIONE DI SALUTE VS DEPRESSIONE", "debug.txt")
-logToFile(health_table, "debug.txt")
+logToFile("\n### CONDIZIONE DI SALUTE VS DEPRESSIONE", pathDebug)
+logToFile(health_table, pathDebug)
 
 
 ### CONDIZIONE DI SALUTE VS DEPRESSIONE
@@ -276,8 +263,8 @@ health_table = tabulate(
     health_table, headers="keys", tablefmt="rounded_grid"
 )
 
-logToFile("\n### CONDIZIONE DI SALUTE VS DEPRESSIONE", "debug.txt")
-logToFile(health_table, "debug.txt")
+logToFile("\n### CONDIZIONE DI SALUTE VS DEPRESSIONE", pathDebug)
+logToFile(health_table, pathDebug)
 
 
 ### STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE
@@ -303,7 +290,7 @@ ax.set_xlabel("Friend Circle")
 ax.set_ylabel("Relationship Status")
 
 plt.tight_layout()
-plt.savefig("plot_Relationship_FriendCircle.svg", format="svg", bbox_inches="tight")
+plt.savefig(pathPlots+"plot_Relationship_FriendCircle.svg", format="svg", bbox_inches="tight")
 
 
 ### STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE ###
@@ -339,8 +326,8 @@ for col in ["P-value", "P-value (corrected)"]:
 
 friend_table = tabulate(friend_table, headers="keys", tablefmt="rounded_grid", showindex=False)
 
-logToFile("\n### STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE", "debug.txt")
-logToFile(friend_table, "debug.txt")
+logToFile("\n### STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE", pathDebug)
+logToFile(friend_table, pathDebug)
 
 
 # COSTI EXTRA-STUDIO E DEPRESSIONE #
@@ -372,8 +359,8 @@ cost_table = tabulate(
     showindex=False
 )
 
-logToFile("\n### COSTI EXTRA-STUDIO E DEPRESSIONE", "debug.txt")
-logToFile(cost_table, "debug.txt")
+logToFile("\n### COSTI EXTRA-STUDIO E DEPRESSIONE", pathDebug)
+logToFile(cost_table, pathDebug)
 
 # Grafico
 fig, ax = plt.subplots(figsize=(9, 5))
@@ -404,7 +391,7 @@ ax.legend()
 
 
 plt.tight_layout()
-plt.savefig("plot_extra_studio_vs_depressione.svg")
+plt.savefig(pathPlots+"plot_extra_studio_vs_depressione.svg")
 plt.close()
 
 
@@ -443,8 +430,8 @@ quintile_table = tabulate(
     showindex=False
 )
 
-logToFile("\n### TEST STATISTICO: QUINTILI DI COSTO E DEPRESSIONE", "debug.txt")
-logToFile(quintile_table, "debug.txt")
+logToFile("\n### TEST STATISTICO: QUINTILI DI COSTO E DEPRESSIONE", pathDebug)
+logToFile(quintile_table, pathDebug)
 
 
 ### COSTO E CLASSE SOCIALE #
@@ -464,8 +451,8 @@ for titolo, tabella in [
     ("Tasso di depressione (%)", class_rates),
     ("Tasso di depression N studenti", class_counts)
 ]:
-    logToFile(f"\n### {titolo.upper()}", "debug.txt")
-    logToFile(tabulate(tabella, headers="keys", tablefmt="rounded_grid", stralign="right"), "debug.txt")
+    logToFile(f"\n### {titolo.upper()}", pathDebug)
+    logToFile(tabulate(tabella, headers="keys", tablefmt="rounded_grid", stralign="right"), pathDebug)
 
 
 ### COSTI E DEPRESSIONE: CLASSE MEDIA E RICCA #
@@ -477,7 +464,7 @@ v = np.sqrt(chi2 / (table.to_numpy().sum() * min(table.shape[0]-1, table.shape[1
 
 logToFile(
     f"\n### CLASSE MEDIA: chi2={chi2:.2f}, dof={dof}, p-value={p:.5f}, V di Cramér={v:.3f}",
-    "debug.txt"
+    pathDebug
 )
 
 rich = df[df["Family_background"] == "Rich class"]
@@ -485,7 +472,7 @@ q5 = rich["Cost_quintile"] == "Q5 (più alto)"
 
 logToFile(
     f"### CLASSE RICCA: Q5={((rich.loc[q5, 'Depression'] == 'Yes').mean()*100):.1f}% (n={q5.sum()}), Q1-Q4={((rich.loc[~q5, 'Depression'] == 'Yes').mean()*100):.1f}% (n={(~q5).sum()})",
-    "debug.txt"
+    pathDebug
 )
 
 
@@ -522,8 +509,8 @@ association_table = tabulate(
     association_table, headers="keys", tablefmt="rounded_grid", showindex=False
 )
 
-logToFile("\n### ASSOCIAZIONE VARIABILI CATEGORICHE E DEPRESSIONE", "debug.txt")
-logToFile(association_table, "debug.txt")
+logToFile("\n### ASSOCIAZIONE VARIABILI CATEGORICHE E DEPRESSIONE", pathDebug)
+logToFile(association_table, pathDebug)
 
 
 
@@ -539,8 +526,8 @@ for titolo, tabella in [
     ("Tasso di depressione genere_vs_rel_status %", gender_rates),
     ("Tasso di depressione genere_vs_rel_status #N studenti", gender_counts)
 ]:
-    logToFile(f"\n### {titolo.upper()}", "debug.txt")
-    logToFile(tabulate(tabella, headers="keys", tablefmt="rounded_grid"), "debug.txt")
+    logToFile(f"\n### {titolo.upper()}", pathDebug)
+    logToFile(tabulate(tabella, headers="keys", tablefmt="rounded_grid"), pathDebug)
 
 
 ### HEATMAP V DI CRAMÉR 
@@ -562,7 +549,7 @@ ax.set_title("V di Cramér tra le variabili categoriche")
 ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
 
 plt.tight_layout()
-plt.savefig("plot_vCramer.svg")
+plt.savefig(pathPlots+"plot_vCramer.svg")
 plt.close()
 
 
@@ -607,7 +594,7 @@ numeric_association_table[
 ].round(2)
 
 
-logToFile(tabulate(numeric_association_table, headers="keys", tablefmt="rounded_grid", showindex=False), 'debug.txt')
+logToFile(tabulate(numeric_association_table, headers="keys", tablefmt="rounded_grid", showindex=False), pathDebug)
 
 
 ### TASSO DI DEPRESSIONE PER QUINTILI DI CGPA #
@@ -628,7 +615,7 @@ cgpa_rates = (
     .reset_index()
 )
 
-logToFile(tabulate(cgpa_rates.round(2),headers="keys",tablefmt="rounded_grid",showindex=False), 'debug.txt')
+logToFile(tabulate(cgpa_rates.round(2),headers="keys",tablefmt="rounded_grid",showindex=False), pathDebug)
 
 fig, ax = plt.subplots(figsize=(9, 5))
 
@@ -645,7 +632,7 @@ ax.set_ylabel("Percentuale di studenti con depressione")
 ax.legend()
 
 plt.tight_layout()
-plt.savefig("plot_cgpa_quintili_depressione.svg")
+plt.savefig(pathPlots+"plot_cgpa_quintili_depressione.svg")
 plt.close()
 
 
@@ -683,7 +670,7 @@ for col in ["P-value", "P-value corr."]:
     )
 
 logToFile(tabulate(cgpa_quintile_table.fillna("-"), headers="keys",
-                   tablefmt="rounded_grid", showindex=False), "debug.txt")
+                   tablefmt="rounded_grid", showindex=False), pathDebug)
 
 
 
@@ -696,7 +683,7 @@ tabella_corr.insert(0, "Metodo", "Spearman")
 
 logToFile(tabulate(
     tabella_corr, headers="keys", tablefmt="rounded_grid"
-), "debug.txt")
+), pathDebug)
 
 fig, ax = plt.subplots(figsize=(9, 7))
 
@@ -718,7 +705,7 @@ ax.tick_params(axis="x", rotation=30, labelsize=11)
 ax.tick_params(axis="y", rotation=0, labelsize=11)
 
 plt.tight_layout()
-plt.savefig("plot_correlazione_spearman.svg", bbox_inches="tight")
+plt.savefig(pathPlots+"plot_correlazione_spearman.svg", bbox_inches="tight")
 plt.close()
 
 
@@ -736,10 +723,10 @@ profile_summary = (
     .reset_index()
 )
 
-logToFile(f"Profili totali: {len(profile_summary)}", "debug.txt")
+logToFile(f"Profili totali: {len(profile_summary)}", pathDebug)
 
 profile_summary = profile_summary[profile_summary["Total_Students"] >= 20].copy()
-logToFile(f"Profili con almeno 20 studenti: {len(profile_summary)}", "debug.txt")
+logToFile(f"Profili con almeno 20 studenti: {len(profile_summary)}", pathDebug)
 
 profile_summary["Depression_Rate"] = (
     profile_summary["Depression_Count"] / profile_summary["Total_Students"] * 100
@@ -760,4 +747,4 @@ profile_summary[["Depression_Rate", "CI_low", "CI_high"]] = (
 
 profile_summary = profile_summary.sort_values("Depression_Rate", ascending=False)
 
-logToFile(tabulate(profile_summary.head(10),headers="keys",tablefmt="rounded_grid",showindex=False), "debug.txt")
+logToFile(tabulate(profile_summary.head(10),headers="keys",tablefmt="rounded_grid",showindex=False), pathDebug)
