@@ -19,6 +19,9 @@ from tabulate import tabulate
 warnings.filterwarnings("ignore")
 
 
+from scipy.stats import chi2_contingency
+
+
 plt.style.use("fivethirtyeight")
 
 def logToFile(data, output):
@@ -44,7 +47,7 @@ df = pd.read_csv(path_file)
 colMissing = df.isna().sum().to_frame(name='Valori mancanti')
 colMissing = tabulate(colMissing, headers="keys", tablefmt='rounded_grid')
 
-logToFile('\n### Analisi dati mancanti', 'debug.txt')
+logToFile('\n### ANALISI DATI MANCANTI', 'debug.txt')
 logToFile(colMissing, 'debug.txt')
 
 
@@ -56,7 +59,7 @@ logToFile(stats, 'debug.txt')
 
 
 # Coerenza logica: relazione e stato civile
-print("\nRelationship status vs marital status:")
+print("\nRELATIONSHIP STATUS VS MARITAL STATUS:")
 print(pd.crosstab(df["Relationship_status"], df["Marital_status"]))
 
 
@@ -180,3 +183,59 @@ plot_depression_comparison("Family_background")
 plot_depression_comparison("Relationship_status")
 plot_depression_comparison("Marital_status")
 plot_depression_comparison("Living_style")
+
+### STATISTICHE SULLA DEPRESSIONE IN BASE ALLE SOTTOCATEGORIE
+
+summary_list = []
+categorical_columns = [
+    col for col in df.select_dtypes(include=["object", "category", "string"]).columns
+    if col != "Depression"
+]
+
+# Rimozione depression perche ovvia
+
+
+
+for col in categorical_columns:
+    summary = df.groupby(col, observed=True)["Depression"].apply(
+        lambda x: (x == "Yes").mean() * 100
+    ).reset_index(name="Depression_Rate")
+
+    summary["Variable"] = col
+    summary = summary.rename(columns={col: "Category"})
+    summary_list.append(summary)
+
+depression_rates = pd.concat(summary_list, ignore_index=True)
+
+depression_rates = depression_rates[
+    ["Variable", "Category", "Depression_Rate"]
+].sort_values("Depression_Rate", ascending=False)
+
+depression_rates["Depression_Rate"] = depression_rates["Depression_Rate"].round(2)
+depression_rates = tabulate(depression_rates, headers="keys", tablefmt="rounded_grid", floatfmt=".2f")
+logToFile('\n### STATISTICHE SULLA DEPRESSIONE IN BASE ALLE SOTTOCATEGORIE','debug.txt')
+logToFile(depression_rates, 'debug.txt')
+
+
+### TEST CHI QUADRO E V-CRAMER
+
+association_results = []
+
+for col in categorical_columns:
+    table = pd.crosstab(df[col], df["Depression"])
+    chi2, p, dof, expected = chi2_contingency(table)
+    n, r, k = table.to_numpy().sum(), *table.shape
+    v = np.sqrt(chi2 / (n * min(r - 1, k - 1))) if min(r - 1, k - 1) > 0 else np.nan
+
+    association_results.append({
+        "Variable": col, "Chi-square": round(chi2, 2),
+        "Degrees of Freedom": dof,
+        "P-value": "< 0.001" if p < 0.001 else f"{p:.3f}",
+        "Cramer's V": round(v, 3)
+    })
+
+association_table = pd.DataFrame(association_results)
+association_table = tabulate(association_table, headers="keys", tablefmt="rounded_grid", floatfmt=".3f")
+logToFile('\n### TEST CHI QUADRO E V-CRAMER','debug.txt')
+logToFile(association_table, 'debug.txt')
+
