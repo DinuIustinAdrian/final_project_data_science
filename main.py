@@ -18,6 +18,8 @@ import warnings
 from tabulate import tabulate
 warnings.filterwarnings("ignore")
 
+from scipy.stats import mannwhitneyu
+
 
 from scipy.stats import chi2_contingency
 
@@ -358,7 +360,7 @@ cost_rates = (
     .reset_index()
 )
 
-# Tabella dei risultati
+### TABELLA DEI RISULTATI
 cost_table = cost_rates.copy()
 cost_table["Rate (%)"] = cost_table["Rate"].round(2)
 cost_table = cost_table.drop(columns="Rate")
@@ -384,7 +386,7 @@ sns.barplot(
     ax=ax
 )
 
-# Tasso complessivo di depressione
+### TASSO COMPLESSIVO DI DEPRESSIONE
 overall_rate = (df["Depression"] == "Yes").mean() * 100
 
 ax.axhline(
@@ -406,7 +408,7 @@ plt.savefig("plot_extra_studio_vs_depressione.svg")
 plt.close()
 
 
-# TEST STATISTICO: QUINTILI DI COSTO E DEPRESSIONE #
+### TEST STATISTICO: QUINTILI DI COSTO E DEPRESSIONE #
 
 quintile_results = []
 
@@ -445,7 +447,7 @@ logToFile("\n### TEST STATISTICO: QUINTILI DI COSTO E DEPRESSIONE", "debug.txt")
 logToFile(quintile_table, "debug.txt")
 
 
-# COSTO E CLASSE SOCIALE #
+### COSTO E CLASSE SOCIALE #
 
 median_cost = df.groupby("Family_background")["Cost_without_study"].median()
 class_counts = pd.crosstab(df["Cost_quintile"], df["Family_background"])
@@ -466,4 +468,182 @@ for titolo, tabella in [
     logToFile(tabulate(tabella, headers="keys", tablefmt="rounded_grid", stralign="right"), "debug.txt")
 
 
+### COSTI E DEPRESSIONE: CLASSE MEDIA E RICCA #
 
+middle = df[df["Family_background"] == "Middle class"]
+table = pd.crosstab(middle["Cost_quintile"], middle["Depression"])
+chi2, p, dof, expected = chi2_contingency(table)
+v = np.sqrt(chi2 / (table.to_numpy().sum() * min(table.shape[0]-1, table.shape[1]-1)))
+
+logToFile(
+    f"\n### CLASSE MEDIA: chi2={chi2:.2f}, dof={dof}, p-value={p:.5f}, V di Cramér={v:.3f}",
+    "debug.txt"
+)
+
+rich = df[df["Family_background"] == "Rich class"]
+q5 = rich["Cost_quintile"] == "Q5 (più alto)"
+
+logToFile(
+    f"### CLASSE RICCA: Q5={((rich.loc[q5, 'Depression'] == 'Yes').mean()*100):.1f}% (n={q5.sum()}), Q1-Q4={((rich.loc[~q5, 'Depression'] == 'Yes').mean()*100):.1f}% (n={(~q5).sum()})",
+    "debug.txt"
+)
+
+
+### ASSOCIAZIONE VARIABILI CATEGORICHE E DEPRESSIONE #
+
+association_results = []
+
+for col in categorical_columns:
+    table = pd.crosstab(df[col], df["Depression"])
+    chi2, p, dof, expected = chi2_contingency(table)
+    n, (r, k) = table.to_numpy().sum(), table.shape
+
+    v = np.sqrt(chi2 / (n * min(r-1, k-1))) if min(r-1, k-1) > 0 else np.nan
+    strength = "Negligible" if v < 0.1 else "Weak" if v < 0.3 else "Moderate" if v < 0.5 else "Strong"
+
+    association_results.append({
+        "Variable": col,
+        "Chi-square": round(chi2, 2),
+        "DoF": dof,
+        "P-value": p,
+        "Cramer's V": round(v, 3),
+        "Strength": strength,
+        "P-value corrected": min(p * len(categorical_columns), 1)
+    })
+
+association_table = pd.DataFrame(association_results).sort_values("Cramer's V", ascending=False)
+
+for col in ["P-value", "P-value corrected"]:
+    association_table[col] = association_table[col].map(
+        lambda p: "< 0.001" if p < 0.001 else f"{p:.3f}"
+    )
+
+association_table = tabulate(
+    association_table, headers="keys", tablefmt="rounded_grid", showindex=False
+)
+
+logToFile("\n### ASSOCIAZIONE VARIABILI CATEGORICHE E DEPRESSIONE", "debug.txt")
+logToFile(association_table, "debug.txt")
+
+
+
+### DEPRESSIONE PER GENERE E STATO DI RELAZIONE #
+
+gender_counts = pd.crosstab(df["Relationship_status"], df["Gender"])
+gender_rates = pd.crosstab(
+    df["Relationship_status"], df["Gender"],
+    values=df["Depression"].eq("Yes"), aggfunc="mean"
+).mul(100).round(1)
+
+for titolo, tabella in [
+    ("Tasso di depressione genere_vs_rel_status %", gender_rates),
+    ("Tasso di depressione genere_vs_rel_status #N studenti", gender_counts)
+]:
+    logToFile(f"\n### {titolo.upper()}", "debug.txt")
+    logToFile(tabulate(tabella, headers="keys", tablefmt="rounded_grid"), "debug.txt")
+
+
+### HEATMAP V DI CRAMÉR 
+
+cat_cols = categorical_columns + ["Depression"]
+cramers_matrix = pd.DataFrame(index=cat_cols, columns=cat_cols, dtype=float)
+
+for a in cat_cols:
+    for b in cat_cols:
+        table = pd.crosstab(df[a], df[b])
+        chi2 = chi2_contingency(table)[0]
+        n = table.to_numpy().sum()
+        denom = n * (min(table.shape) - 1)
+        cramers_matrix.loc[a, b] = np.sqrt(chi2 / denom) if denom > 0 else np.nan
+
+fig, ax = plt.subplots(figsize=(10, 8))
+sns.heatmap(cramers_matrix, annot=True, fmt=".2f", cmap="Blues", vmin=0, vmax=1, ax=ax)
+ax.set_title("V di Cramér tra le variabili categoriche")
+ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+
+plt.tight_layout()
+plt.savefig("plot_vCramer.svg")
+plt.close()
+
+
+### ASSOCIAZIONE VARIABILI NUMERICHE CON DEPRESSIONE #
+
+numeric_columns = ["Age", "Current_semester", "CGPA", "Cost_without_study"]
+results = []
+
+n_no = (df["Depression"] == "No").sum()
+n_yes = (df["Depression"] == "Yes").sum()
+
+for col in numeric_columns:
+    no_group = df.loc[df["Depression"] == "No", col].dropna()
+    yes_group = df.loc[df["Depression"] == "Yes", col].dropna()
+
+    statistic, p_value = mannwhitneyu(no_group, yes_group, alternative="two-sided")
+
+    results.append({
+        "Variable": col,
+        "Median (No)": no_group.median(),
+        "Median (Yes)": yes_group.median(),
+        "U Statistic": statistic,
+        "P-value": p_value,
+        "Effect size (A)": statistic / (len(no_group) * len(yes_group))
+    })
+
+numeric_association_table = pd.DataFrame(results)
+
+numeric_association_table["P-value corrected"] = (
+    numeric_association_table["P-value"] * len(numeric_columns)
+).clip(upper=1)
+
+for col in ["P-value", "P-value corrected"]:
+    numeric_association_table[col] = numeric_association_table[col].map(
+        lambda p: "< 0.001" if p < 0.001 else f"{p:.3f}"
+    )
+
+numeric_association_table[
+    ["Median (No)", "Median (Yes)", "U Statistic", "Effect size (A)"]
+] = numeric_association_table[
+    ["Median (No)", "Median (Yes)", "U Statistic", "Effect size (A)"]
+].round(2)
+
+
+logToFile(tabulate(numeric_association_table, headers="keys", tablefmt="rounded_grid", showindex=False), 'debug.txt')
+
+
+### TASSO DI DEPRESSIONE PER QUINTILI DI CGPA #
+
+df["CGPA_quintile"] = pd.qcut(
+    df["CGPA"], q=5,
+    labels=["C1 (più basso)", "C2", "C3", "C4", "C5 (più alto)"]
+)
+
+cgpa_rates = (
+    df.groupby("CGPA_quintile", observed=True)
+    .agg(
+        CGPA_min=("CGPA", "min"),
+        CGPA_max=("CGPA", "max"),
+        Students=("Depression", "size"),
+        Rate=("Depression", lambda x: (x == "Yes").mean() * 100)
+    )
+    .reset_index()
+)
+
+logToFile(tabulate(cgpa_rates.round(2),headers="keys",tablefmt="rounded_grid",showindex=False), 'debug.txt')
+
+fig, ax = plt.subplots(figsize=(9, 5))
+
+sns.barplot(data=cgpa_rates, x="CGPA_quintile", y="Rate", color="tab:orange", ax=ax)
+
+overall_rate = (df["Depression"] == "Yes").mean() * 100
+ax.axhline(overall_rate, color="gray", linestyle="--",
+           label=f"Tasso complessivo ({overall_rate:.1f}%)")
+
+ax.bar_label(ax.containers[0], fmt="%.1f%%", padding=3)
+ax.set_title("Tasso di depressione per gruppo di CGPA")
+ax.set_xlabel("CGPA (quintili)")
+ax.set_ylabel("Percentuale di studenti con depressione")
+ax.legend()
+
+plt.tight_layout()
+plt.savefig("plot_cgpa_quintili_depressione.svg")
+plt.close()
