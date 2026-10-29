@@ -91,7 +91,7 @@ ax2.set_ylabel("Density")
 
 plt.tight_layout()
 
-plt.savefig(pathPlots+"plot_AgeDistribution_Gender.svg", format="svg", bbox_inches="tight")
+plt.savefig(pathPlots+"plot_AgeDistribution_Gender.png", format="png", bbox_inches="tight")
 
 
 ### PLOT Depression status by studends ### 
@@ -134,7 +134,7 @@ ax.set_ylabel("Number of Students")
 ax.set_ylim(top=ax.get_ylim()[1] * 1.15)
 
 plt.tight_layout()
-plt.savefig(pathPlots+"plot_DepressionStatus.svg", format="svg", bbox_inches="tight")
+plt.savefig(pathPlots+"plot_DepressionStatus.png", format="png", bbox_inches="tight")
 
 
 ### Plot depressione in base a categoria
@@ -166,7 +166,7 @@ def plot_depression_comparison(column, title=None):
     ax.tick_params(axis="x", rotation=0)
     ax.legend(title="Depression")
     ax.grid(axis="y", alpha=0.8)
-    plt.savefig(pathPlots+"plot_"+column+"_vs_Depression.svg", format="svg", bbox_inches="tight")
+    plt.savefig(pathPlots+"plot_"+column+"_vs_Depression.png", format="png", bbox_inches="tight")
 
 plot_depression_comparison("Family_background")
 plot_depression_comparison("Relationship_status")
@@ -290,7 +290,7 @@ ax.set_xlabel("Friend Circle")
 ax.set_ylabel("Relationship Status")
 
 plt.tight_layout()
-plt.savefig(pathPlots+"plot_Relationship_FriendCircle.svg", format="svg", bbox_inches="tight")
+plt.savefig(pathPlots+"plot_Relationship_FriendCircle.png", format="png", bbox_inches="tight")
 
 
 ### STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE ###
@@ -391,7 +391,7 @@ ax.legend()
 
 
 plt.tight_layout()
-plt.savefig(pathPlots+"plot_extra_studio_vs_depressione.svg")
+plt.savefig(pathPlots+"plot_extra_studio_vs_depressione.png")
 plt.close()
 
 
@@ -549,7 +549,7 @@ ax.set_title("V di Cramér tra le variabili categoriche")
 ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
 
 plt.tight_layout()
-plt.savefig(pathPlots+"plot_vCramer.svg")
+plt.savefig(pathPlots+"plot_vCramer.png")
 plt.close()
 
 
@@ -632,7 +632,7 @@ ax.set_ylabel("Percentuale di studenti con depressione")
 ax.legend()
 
 plt.tight_layout()
-plt.savefig(pathPlots+"plot_cgpa_quintili_depressione.svg")
+plt.savefig(pathPlots+"plot_cgpa_quintili_depressione.png")
 plt.close()
 
 
@@ -705,7 +705,7 @@ ax.tick_params(axis="x", rotation=30, labelsize=11)
 ax.tick_params(axis="y", rotation=0, labelsize=11)
 
 plt.tight_layout()
-plt.savefig(pathPlots+"plot_correlazione_spearman.svg", bbox_inches="tight")
+plt.savefig(pathPlots+"plot_correlazione_spearman.png", bbox_inches="tight")
 plt.close()
 
 
@@ -748,3 +748,42 @@ profile_summary[["Depression_Rate", "CI_low", "CI_high"]] = (
 profile_summary = profile_summary.sort_values("Depression_Rate", ascending=False)
 
 logToFile(tabulate(profile_summary.head(10),headers="keys",tablefmt="rounded_grid",showindex=False), pathDebug)
+
+
+
+### SEZIONE MODELLI
+
+
+TARGET = "Depression"
+num_cols = ["Age", "Current_semester", "CGPA", "Cost_without_study"]
+cat_cols = [col for col in categorical_columns if col != TARGET]
+
+df_ready = df.copy()
+df_tree = df_ready.copy()
+
+# Rimuove eventuali colonne di clustering
+cluster_cols = [col for col in df_tree.columns if col.startswith("cluster")]
+df_tree = df_tree.drop(columns=cluster_cols, errors="ignore")
+
+# Seleziona solo le colonne necessarie e rimuove righe incomplete
+needed_cols = [TARGET] + num_cols + cat_cols
+df_tree = df_tree[needed_cols].dropna().copy()
+
+# Codifica del target
+df_tree[TARGET] = (
+    df_tree[TARGET]
+    .astype(str)
+    .str.strip()
+    .str.lower()
+    .map({"yes": 1, "no": 0})
+)
+
+if df_tree[TARGET].isna().any():
+    raise ValueError("Il target contiene valori diversi da Yes/No.")
+
+df_tree[TARGET] = df_tree[TARGET].astype(int)
+
+logToFile("\n### PREPARAZIONE DATASET MODELLI", pathDebug)
+logToFile(f"Distribuzione target:\n{df_tree[TARGET].value_counts()}", pathDebug)
+logToFile(f"Dimensioni finali dataset: {df_tree.shape}", pathDebug)
+
