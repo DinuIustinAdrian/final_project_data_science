@@ -453,3 +453,134 @@ weighted avg       0.69      0.69      0.69       893
 ├────────────────────────────────┼──────────────┤
 │ Home_division_Rajshahi         │    0.0132827 │
 ╰────────────────────────────────┴──────────────╯
+
+### CONFIGURAZIONE RANDOM FOREST
+Target: Depression
+Numeriche: ['Age', 'Current_semester', 'CGPA', 'Cost_without_study']
+Categoriche: ['Gender', 'Family_background', 'Relationship_status', 'Marital_status', 'Living_style', 'friend_circle', 'Home_division']
+Escluse: ['Health_condition']
+
+### PREPARAZIONE DATASET RANDOM FOREST
+Distribuzione del target:
+Depression
+0    3263
+1    1201
+Name: count, dtype: int64
+Dimensioni dataset: (4464, 12)
+
+### SPLIT DATASET RANDOM FOREST (Train/Test)
+Train shape: (3571, 11) | Test shape: (893, 11)
+Distribuzione target train (%):
+Depression
+0    0.731
+1    0.269
+Name: proportion, dtype: float64
+Distribuzione target test (%):
+Depression
+0    0.731
+1    0.269
+Name: proportion, dtype: float64
+
+### RANDOMIZED SEARCH RF / PARAMETRI OTTIMALI CARICATI
+Caricamento iperparametri salvati da 'data/randomSearchRandomForest.par':
+{'classifier__class_weight': 'balanced', 'classifier__max_depth': 15, 'classifier__max_features': 0.3, 'classifier__min_samples_leaf': 4, 'classifier__min_samples_split': 14}
+
+### ANALISI OOB PER NUMERO DI ALBERI
+Numero di alberi con OOB ROC-AUC massimo: 425
+OOB ROC-AUC massimo: 0.7663
+OOB error corrispondente: 0.2896
+
+### VALUTAZIONE OOB MODELLO FINALE RF
+Numero finale di alberi: 425
+OOB accuracy: 0.7054 | OOB error: 0.2946
+OOB ROC-AUC: 0.7663
+
+### RANDOM FOREST - TEST SET (SOGLIA DEFAULT 0.50)
+Acc: 0.676 | Prec: 0.433 | Rec: 0.654 | F1: 0.521 | ROC-AUC: 0.730
+
+Confusion Matrix:
+╭───────────────┬────────────────╮
+│   Pred No (0) │   Pred Yes (1) │
+├───────────────┼────────────────┤
+│           447 │            206 │
+├───────────────┼────────────────┤
+│            83 │            157 │
+╰───────────────┴────────────────╯
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0       0.84      0.68      0.76       653
+           1       0.43      0.65      0.52       240
+
+    accuracy                           0.68       893
+   macro avg       0.64      0.67      0.64       893
+weighted avg       0.73      0.68      0.69       893
+
+
+### OTTIMIZZAZIONE SOGLIA DI DECISIONE
+Soglia ottimale per F1: 0.4926
+╭─────────────┬─────────────┬──────────┬────────╮
+│   threshold │   precision │   recall │     f1 │
+├─────────────┼─────────────┼──────────┼────────┤
+│      0.4926 │      0.4313 │   0.6667 │ 0.5237 │
+╰─────────────┴─────────────┴──────────┴────────╯
+
+### RANDOM FOREST - TEST SET (SOGLIA OTTIMIZZATA)
+Soglia applicata: 0.4926
+Acc: 0.674 | Prec: 0.431 | Rec: 0.667 | F1: 0.524 | ROC-AUC: 0.730
+
+Confusion Matrix:
+╭───────────────┬────────────────╮
+│   Pred No (0) │   Pred Yes (1) │
+├───────────────┼────────────────┤
+│           442 │            211 │
+├───────────────┼────────────────┤
+│            80 │            160 │
+╰───────────────┴────────────────╯
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0       0.85      0.68      0.75       653
+           1       0.43      0.67      0.52       240
+
+    accuracy                           0.67       893
+   macro avg       0.64      0.67      0.64       893
+weighted avg       0.74      0.67      0.69       893
+
+
+### FEATURE IMPORTANCE RANDOM FOREST (TOP 15)
+╭────────────────────────────────────────────┬──────────────╮
+│ Feature                                    │   Importance │
+├────────────────────────────────────────────┼──────────────┤
+│ num__Cost_without_study                    │    0.187254  │
+├────────────────────────────────────────────┼──────────────┤
+│ num__CGPA                                  │    0.175799  │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__Relationship_status_Single            │    0.130569  │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__Relationship_status_In a Relationship │    0.0825792 │
+├────────────────────────────────────────────┼──────────────┤
+│ num__Current_semester                      │    0.0814956 │
+├────────────────────────────────────────────┼──────────────┤
+│ num__Age                                   │    0.0783562 │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__Gender_Male                           │    0.0452978 │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__Marital_status_Unmarried              │    0.0337456 │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__friend_circle_Yes                     │    0.0319653 │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__Home_division_Dhaka                   │    0.0275521 │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__Family_background_Middle class        │    0.0211249 │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__Living_style_Family                   │    0.0206734 │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__Family_background_Rich class          │    0.0184797 │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__Home_division_Khulna                  │    0.0123303 │
+├────────────────────────────────────────────┼──────────────┤
+│ cat__Home_division_Sylhet                  │    0.0115201 │
+╰────────────────────────────────────────────┴──────────────╯

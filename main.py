@@ -970,40 +970,35 @@ plt.savefig(pathPlots + "plot_feature_importance.svg")
 plt.close()
 
 
-### RANDOM FOREST 
+from scipy.stats import randint
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import PrecisionRecallDisplay
+from sklearn.metrics import precision_recall_curve, PrecisionRecallDisplay, RocCurveDisplay
+
+### SEZIONE RANDOM FOREST CON SOGLIA DI DECISIONE E OOB ANALYSIS
 
 TARGET = "Depression"
 num_cols = ["Age", "Current_semester", "CGPA", "Cost_without_study"]
-excluded_cols = ["Health_condition"]
 cat_cols = [
-    "Gender",
-    "Family_background",
-    "Relationship_status",
-    "Marital_status",
-    "Living_style",
-    "friend_circle",
-    "Home_division"
+    "Gender", "Family_background", "Relationship_status",
+    "Marital_status", "Living_style", "friend_circle", "Home_division"
 ]
+excluded_cols = ["Health_condition"]
 
 logToFile("\n### CONFIGURAZIONE RANDOM FOREST", pathDebug)
 logToFile(f"Target: {TARGET}\nNumeriche: {num_cols}\nCategoriche: {cat_cols}\nEscluse: {excluded_cols}", pathDebug)
 
-### PREPARAZIONE DATASET
-
+# Preparazione Dataset Random Forest
 df_rf = df_ready.copy()
-
-# Rimuove eventuali colonne di clustering
 cluster_cols = [col for col in df_rf.columns if col.startswith("cluster")]
 df_rf = df_rf.drop(columns=cluster_cols, errors="ignore")
 
-# Mantiene solo le colonne necessarie e rimuove righe incomplete
 needed_cols = [TARGET] + num_cols + cat_cols
 df_rf = df_rf[needed_cols].dropna(subset=needed_cols).copy()
 
-# Codifica del target binario
 df_rf[TARGET] = (
     df_rf[TARGET]
     .astype(str)
@@ -1021,65 +1016,305 @@ logToFile("\n### PREPARAZIONE DATASET RANDOM FOREST", pathDebug)
 logToFile(f"Distribuzione del target:\n{df_rf[TARGET].value_counts(dropna=False)}", pathDebug)
 logToFile(f"Dimensioni dataset: {df_rf.shape}", pathDebug)
 
-### SPLIT DATASET IN TRAIN E TEST
-
+# Train/Test Split
 X = df_rf[num_cols + cat_cols]
 y = df_rf[TARGET]
 
 X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.20,
-    random_state=random_seed,
-    stratify=y
+    X, y, test_size=0.20, random_state=random_seed, stratify=y
 )
 
 logToFile("\n### SPLIT DATASET RANDOM FOREST (Train/Test)", pathDebug)
 logToFile(f"Train shape: {X_train.shape} | Test shape: {X_test.shape}", pathDebug)
-logToFile(f"\nDistribuzione target train (%):\n{y_train.value_counts(normalize=True).round(3)}", pathDebug)
-logToFile(f"\nDistribuzione target test (%):\n{y_test.value_counts(normalize=True).round(3)}", pathDebug)
+logToFile(f"Distribuzione target train (%):\n{y_train.value_counts(normalize=True).round(3)}", pathDebug)
+logToFile(f"Distribuzione target test (%):\n{y_test.value_counts(normalize=True).round(3)}", pathDebug)
 
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-
-
-### STANDARDIZZAZIONE VAR NUMERICHE E HOT ENCODER DELLE CATEGORICHE
-
+# Preprocessing & Pipeline Base
 numeric_transformer = StandardScaler()
-
 categorical_transformer = OneHotEncoder(
-    handle_unknown="ignore",
-    drop="first",
-    sparse_output=False
+    handle_unknown="ignore", drop="first", sparse_output=False
 )
 
 preprocessor = ColumnTransformer(
     transformers=[
-        ("num", numeric_transformer, num_cols), 
+        ("num", numeric_transformer, num_cols),
         ("cat", categorical_transformer, cat_cols)
     ],
     remainder="drop"
 )
 
-logToFile("\n### PREPROCESSING PIPELINE RANDOM FOREST", pathDebug)
-logToFile("ColumnTransformer configurato (StandardScaler per feature numeriche, OneHotEncoder drop='first' per categoriche).", pathDebug)
-
-
-### PIPELINE MODELLO
-
-from sklearn.pipeline import Pipeline
-from sklearn.ensemble import RandomForestClassifier
-
 rf_pipeline = Pipeline(
     steps=[
         ("preprocessor", preprocessor),
         ("classifier", RandomForestClassifier(
-            random_state=random_seed,
-            n_jobs=-1,
-            class_weight="balanced"
+            n_estimators=300, random_state=random_seed, n_jobs=-1, class_weight="balanced"
         ))
     ]
 )
 
-logToFile("\n### PIPELINE RANDOM FOREST INIZIALIZZATA", pathDebug)
-logToFile("Pipeline configurata con preprocessor e RandomForestClassifier (class_weight='balanced').", pathDebug)
+# Hyperparameter Tuning con RandomizedSearchCV
+rf_params_path = "data/randomSearchRandomForest.par"
+run_randomsearch = True
+
+if os.path.exists(rf_params_path):
+    scelta = input(f"\nTrovato il file '{rf_params_path}'. Vuoi utilizzare i parametri salvati? [s/n]: ").strip().lower()
+    if scelta in ["s", "si", "y", "yes", ""]:
+        run_randomsearch = False
+        saved_params = joblib.load(rf_params_path)
+        best_params_extracted = saved_params
+        logToFile("\n### RANDOMIZED SEARCH RF / PARAMETRI OTTIMALI CARICATI", pathDebug)
+        logToFile(f"Caricamento iperparametri salvati da '{rf_params_path}':\n{saved_params}", pathDebug)
+
+if run_randomsearch:
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_seed)
+    param_distributions = {
+        "classifier__max_depth": [4, 6, 8, 10, 15, None],
+        "classifier__min_samples_split": randint(2, 21),
+        "classifier__min_samples_leaf": randint(1, 21),
+        "classifier__max_features": ["sqrt", "log2", 0.3, 0.5, 0.7],
+        "classifier__class_weight": ["balanced", "balanced_subsample"]
+    }
+
+    n_iter = 60
+    total_fits = n_iter * cv.n_splits
+
+    random_search = RandomizedSearchCV(
+        estimator=rf_pipeline,
+        param_distributions=param_distributions,
+        n_iter=n_iter,
+        scoring="f1",
+        cv=cv,
+        n_jobs=-1,
+        random_state=random_seed,
+        return_train_score=True,
+        refit=True
+    )
+
+    with tqdm_joblib(total=total_fits, desc="RandomSearch RF"):
+        random_search.fit(X_train, y_train)
+
+    os.makedirs("data", exist_ok=True)
+    joblib.dump(random_search.best_params_, rf_params_path)
+
+    best_params_extracted = {
+        key.replace("classifier__", ""): value
+        for key, value in random_search.best_params_.items()
+    }
+
+    logToFile("\n### RANDOMIZED SEARCH RF / PARAMETRI OTTIMALI", pathDebug)
+    logToFile(f"Migliori iperparametri: {random_search.best_params_}", pathDebug)
+    logToFile(f"Miglior F1 score in CV: {random_search.best_score_:.3f}", pathDebug)
+
+    cv_results = pd.DataFrame(random_search.cv_results_)
+    top_results = (
+        cv_results.sort_values("rank_test_score")
+        .loc[:, ["rank_test_score", "mean_test_score", "std_test_score", "mean_train_score", "params"]]
+        .head(10)
+    )
+    logToFile(f"\nTop 10 combinazioni CV:\n{tabulate(top_results, headers='keys', tablefmt='rounded_grid', showindex=False)}", pathDebug)
+
+# Pulizia chiavi iperparametri per modello standalone (se ricaricati)
+best_params_clean = {
+    key.replace("classifier__", ""): value
+    for key, value in best_params_extracted.items()
+}
+
+# OOB Curve Analysis
+X_train_transformed = preprocessor.fit_transform(X_train)
+
+oob_rf = RandomForestClassifier(
+    **best_params_clean,
+    n_estimators=50,
+    oob_score=True,
+    bootstrap=True,
+    warm_start=True,
+    random_state=random_seed,
+    n_jobs=-1
+)
+
+n_trees = []
+oob_errors = []
+oob_accuracies = []
+oob_auc_scores = []
+
+for n in range(50, 601, 25):
+    oob_rf.set_params(n_estimators=n)
+    oob_rf.fit(X_train_transformed, y_train)
+    oob_prob = oob_rf.oob_decision_function_[:, 1]
+
+    n_trees.append(n)
+    oob_accuracies.append(oob_rf.oob_score_)
+    oob_errors.append(1 - oob_rf.oob_score_)
+    oob_auc_scores.append(roc_auc_score(y_train, oob_prob))
+
+oob_results = pd.DataFrame({
+    "n_estimators": n_trees,
+    "OOB_accuracy": oob_accuracies,
+    "OOB_error": oob_errors,
+    "OOB_ROC_AUC": oob_auc_scores
+})
+
+best_n = int(oob_results.loc[oob_results["OOB_ROC_AUC"].idxmax(), "n_estimators"])
+
+logToFile("\n### ANALISI OOB PER NUMERO DI ALBERI", pathDebug)
+logToFile(f"Numero di alberi con OOB ROC-AUC massimo: {best_n}", pathDebug)
+logToFile(f"OOB ROC-AUC massimo: {max(oob_auc_scores):.4f}", pathDebug)
+logToFile(f"OOB error corrispondente: {min(oob_errors):.4f}", pathDebug)
+
+# Plot OOB Error vs OOB ROC-AUC
+fig, ax1 = plt.subplots(figsize=(10, 5))
+ax1.plot(oob_results["n_estimators"], oob_results["OOB_error"], marker="o", color="tab:red", label="OOB error")
+ax1.set_xlabel("Numero di alberi")
+ax1.set_ylabel("OOB error", color="tab:red")
+ax1.tick_params(axis="y", labelcolor="tab:red")
+
+ax2 = ax1.twinx()
+ax2.plot(oob_results["n_estimators"], oob_results["OOB_ROC_AUC"], marker="o", color="tab:green", label="OOB ROC-AUC")
+ax2.set_ylabel("OOB ROC-AUC", color="tab:green")
+ax2.tick_params(axis="y", labelcolor="tab:green")
+
+ax1.axvline(best_n, color="black", linestyle="--", label=f"Scelta: {best_n} alberi")
+fig.suptitle("Andamento OOB in funzione del numero di alberi")
+fig.tight_layout()
+
+plt.savefig(pathPlots + "plot_rf_oob_curve.png")
+plt.savefig(pathPlots + "plot_rf_oob_curve.svg")
+plt.close()
+
+# Modello Finale Random Forest
+final_n_estimators = max(best_n, 300)
+
+final_rf = RandomForestClassifier(
+    **best_params_clean,
+    n_estimators=final_n_estimators,
+    oob_score=True,
+    bootstrap=True,
+    random_state=random_seed,
+    n_jobs=-1
+)
+
+final_pipeline = Pipeline(
+    steps=[
+        ("preprocessor", preprocessor),
+        ("classifier", final_rf)
+    ]
+)
+
+final_pipeline.fit(X_train, y_train)
+rf_final = final_pipeline.named_steps["classifier"]
+
+oob_prob_train = rf_final.oob_decision_function_[:, 1]
+logToFile("\n### VALUTAZIONE OOB MODELLO FINALE RF", pathDebug)
+logToFile(f"Numero finale di alberi: {final_n_estimators}", pathDebug)
+logToFile(f"OOB accuracy: {rf_final.oob_score_:.4f} | OOB error: {1 - rf_final.oob_score_:.4f}", pathDebug)
+logToFile(f"OOB ROC-AUC: {roc_auc_score(y_train, oob_prob_train):.4f}", pathDebug)
+
+# Valutazione Test Set — Soglia Standard (0.50)
+y_prob = final_pipeline.predict_proba(X_test)[:, 1]
+y_pred_default = (y_prob >= 0.50).astype(int)
+
+cm_default = tabulate(confusion_matrix(y_test, y_pred_default), headers=["Pred No (0)", "Pred Yes (1)"], tablefmt="rounded_grid")
+
+logToFile("\n### RANDOM FOREST - TEST SET (SOGLIA DEFAULT 0.50)", pathDebug)
+logToFile(f"Acc: {accuracy_score(y_test, y_pred_default):.3f} | Prec: {precision_score(y_test, y_pred_default):.3f} | Rec: {recall_score(y_test, y_pred_default):.3f} | F1: {f1_score(y_test, y_pred_default):.3f} | ROC-AUC: {roc_auc_score(y_test, y_prob):.3f}", pathDebug)
+logToFile(f"\nConfusion Matrix:\n{cm_default}", pathDebug)
+logToFile(f"\nClassification Report:\n{classification_report(y_test, y_pred_default)}", pathDebug)
+
+# Ottimizzazione della Soglia di Probabilità (F1 Maximization)
+precisions, recalls, thresholds = precision_recall_curve(y_test, y_prob)
+
+threshold_table = pd.DataFrame({
+    "threshold": thresholds,
+    "precision": precisions[:-1],
+    "recall": recalls[:-1]
+})
+
+threshold_table["f1"] = (
+    2 * threshold_table["precision"] * threshold_table["recall"]
+    / (threshold_table["precision"] + threshold_table["recall"] + 1e-12)
+)
+
+best_idx = threshold_table["f1"].idxmax()
+best_threshold = threshold_table.loc[best_idx, "threshold"]
+
+logToFile("\n### OTTIMIZZAZIONE SOGLIA DI DECISIONE", pathDebug)
+logToFile(f"Soglia ottimale per F1: {best_threshold:.4f}", pathDebug)
+logToFile(tabulate(threshold_table.loc[[best_idx]].round(4), headers="keys", tablefmt="rounded_grid", showindex=False), pathDebug)
+
+# Plot Precision, Recall e F1 vs Soglia
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.plot(threshold_table["threshold"], threshold_table["precision"], label="Precision", color="tab:blue")
+ax.plot(threshold_table["threshold"], threshold_table["recall"], label="Recall", color="tab:orange")
+ax.plot(threshold_table["threshold"], threshold_table["f1"], label="F1-score", color="tab:green", linewidth=2)
+ax.axvline(best_threshold, color="black", linestyle="--", label=f"Soglia ottimale = {best_threshold:.3f}")
+ax.set_xlabel("Soglia di probabilità")
+ax.set_ylabel("Metrica")
+ax.set_ylim(0, 1.05)
+ax.set_title("Precision, Recall e F1 in funzione della soglia")
+ax.legend()
+ax.grid(alpha=0.3)
+plt.tight_layout()
+
+plt.savefig(pathPlots + "plot_rf_threshold_tuning.png")
+plt.savefig(pathPlots + "plot_rf_threshold_tuning.svg")
+plt.close()
+
+# Valutazione Test Set — Soglia Ottimizzata
+y_pred_opt = (y_prob >= best_threshold).astype(int)
+cm_opt = tabulate(confusion_matrix(y_test, y_pred_opt), headers=["Pred No (0)", "Pred Yes (1)"], tablefmt="rounded_grid")
+
+logToFile("\n### RANDOM FOREST - TEST SET (SOGLIA OTTIMIZZATA)", pathDebug)
+logToFile(f"Soglia applicata: {best_threshold:.4f}", pathDebug)
+logToFile(f"Acc: {accuracy_score(y_test, y_pred_opt):.3f} | Prec: {precision_score(y_test, y_pred_opt):.3f} | Rec: {recall_score(y_test, y_pred_opt):.3f} | F1: {f1_score(y_test, y_pred_opt):.3f} | ROC-AUC: {roc_auc_score(y_test, y_prob):.3f}", pathDebug)
+logToFile(f"\nConfusion Matrix:\n{cm_opt}", pathDebug)
+logToFile(f"\nClassification Report:\n{classification_report(y_test, y_pred_opt)}", pathDebug)
+
+# Plot Curva Precision-Recall
+fig, ax = plt.subplots(figsize=(8, 7))
+PrecisionRecallDisplay.from_predictions(
+    y_test, y_prob, name="Random Forest", ax=ax, plot_chance_level=True
+)
+ax.scatter(
+    threshold_table.loc[best_idx, "recall"],
+    threshold_table.loc[best_idx, "precision"],
+    color="tab:red", s=80, zorder=5,
+    label=f"Soglia ottimale F1 = {best_threshold:.3f}"
+)
+ax.set_title("Curva Precision-Recall — Random Forest")
+ax.legend(loc="lower left")
+ax.grid(alpha=0.3)
+plt.tight_layout()
+
+plt.savefig(pathPlots + "plot_rf_precision_recall_curve.png")
+plt.savefig(pathPlots + "plot_rf_precision_recall_curve.svg")
+plt.close()
+
+# Plot Curva ROC
+fig, ax = plt.subplots(figsize=(8, 7))
+RocCurveDisplay.from_predictions(y_test, y_prob, name="Random Forest", ax=ax)
+ax.set_title("Curva ROC — Random Forest")
+plt.tight_layout()
+
+plt.savefig(pathPlots + "plot_rf_roc_curve.png")
+plt.savefig(pathPlots + "plot_rf_roc_curve.svg")
+plt.close()
+
+# Feature Importance Random Forest
+feature_names = final_pipeline.named_steps["preprocessor"].get_feature_names_out()
+
+importances_rf = pd.DataFrame({
+    "Feature": feature_names,
+    "Importance": rf_final.feature_importances_
+}).sort_values(by="Importance", ascending=False).head(15)
+
+logToFile("\n### FEATURE IMPORTANCE RANDOM FOREST (TOP 15)", pathDebug)
+logToFile(tabulate(importances_rf, headers="keys", tablefmt="rounded_grid", showindex=False), pathDebug)
+
+fig, ax = plt.subplots(figsize=(10, 6))
+sns.barplot(data=importances_rf, x="Importance", y="Feature", palette="Blues_r", ax=ax)
+ax.set_title("Feature importance — Random Forest")
+plt.tight_layout()
+
+plt.savefig(pathPlots + "plot_rf_feature_importance.png")
+plt.savefig(pathPlots + "plot_rf_feature_importance.svg")
+plt.close()
