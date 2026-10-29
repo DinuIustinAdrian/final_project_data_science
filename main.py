@@ -9,13 +9,55 @@ from scipy.stats import chi2_contingency, mannwhitneyu
 from statsmodels.stats.proportion import proportion_confint
 from tabulate import tabulate
 
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+    classification_report
+)
+
+from sklearn.model_selection import StratifiedKFold, GridSearchCV
+
+import joblib
+from tqdm import tqdm
+
+from sklearn.tree import plot_tree
+
 plt.style.use("fivethirtyeight")
+
+
+class tqdm_joblib:
+    def __init__(self, total, desc="GridSearchCV"):
+        self.pbar = tqdm(total=total, desc=desc)
+        self.old_cb = joblib.parallel.BatchCompletionCallBack
+        pbar = self.pbar
+        class CB(joblib.parallel.BatchCompletionCallBack):
+            def __call__(self, *args, **kwargs):
+                pbar.update(n=self.batch_size)
+                super().__call__(*args, **kwargs)
+        joblib.parallel.BatchCompletionCallBack = CB
+    def __enter__(self): return self
+    def __exit__(self, *args):
+        joblib.parallel.BatchCompletionCallBack = self.old_cb
+        self.pbar.close()
+
 
 def logToFile(data, output):
     print(data)
     if output != None:
         with open(output, 'a', encoding='utf-8') as file:
-            file.write(data + '\n')
+            file.write(str(data) + '\n')
+
+random_seed = 42
+
+import matplotlib
+
+matplotlib.use("Agg")  # Disattiva la GUI di Tkinter per evitare crash con la parallelizzazione
 
 ### DICHIARAZIONE FILE DI LOG E PLOT
 pathDebug = 'data/debug/log.txt'
@@ -48,8 +90,9 @@ logToFile(stats, pathDebug)
 
 
 # Coerenza logica: relazione e stato civile
-print("\nRELATIONSHIP STATUS VS MARITAL STATUS:")
-print(pd.crosstab(df["Relationship_status"], df["Marital_status"]))
+cross_rel_mar = pd.crosstab(df["Relationship_status"], df["Marital_status"])
+logToFile('\n### RELATIONSHIP STATUS VS MARITAL STATUS', pathDebug)
+logToFile(tabulate(cross_rel_mar, headers="keys", tablefmt="rounded_grid"), pathDebug)
 
 
 ### PLOT Age Distribution by Gender ### 
@@ -183,10 +226,6 @@ categorical_columns = [
     if col != "Depression"
 ]
 
-# Rimozione depression perche ovvia
-
-
-
 for col in categorical_columns:
     summary = df.groupby(col, observed=True)["Depression"].apply(
         lambda x: (x == "Yes").mean() * 100
@@ -204,7 +243,7 @@ depression_rates = depression_rates[
 
 depression_rates["Depression_Rate"] = depression_rates["Depression_Rate"].round(2)
 depression_rates = tabulate(depression_rates, headers="keys", tablefmt="rounded_grid", floatfmt=".2f")
-logToFile('\n### STATISTICHE SULLA DEPRESSIONE IN BASE ALLE SOTTOCATEGORIE',pathDebug)
+logToFile('\n### STATISTICHE SULLA DEPRESSIONE IN BASE ALLE SOTTOCATEGORIE', pathDebug)
 logToFile(depression_rates, pathDebug)
 
 
@@ -227,26 +266,8 @@ for col in categorical_columns:
 
 association_table = pd.DataFrame(association_results)
 association_table = tabulate(association_table, headers="keys", tablefmt="rounded_grid", floatfmt=".3f")
-logToFile('\n### TEST CHI QUADRO E V-CRAMER',pathDebug)
+logToFile('\n### TEST CHI QUADRO E V-CRAMER', pathDebug)
 logToFile(association_table, pathDebug)
-
-
-### CONDIZIONE DI SALUTE VS DEPRESSIONE
-
-health_table = pd.crosstab(
-    df["Health_condition"], df["Depression"], margins=True
-)
-
-health_table["Tasso_depressione (%)"] = (
-    health_table["Yes"] / health_table["All"] * 100
-).round(2)
-
-health_table = tabulate(
-    health_table, headers="keys", tablefmt="rounded_grid"
-)
-
-logToFile("\n### CONDIZIONE DI SALUTE VS DEPRESSIONE", pathDebug)
-logToFile(health_table, pathDebug)
 
 
 ### CONDIZIONE DI SALUTE VS DEPRESSIONE
@@ -389,7 +410,6 @@ ax.set_xlabel("Costo extra-studio (quintili)")
 ax.set_ylabel("Percentuale di studenti con depressione")
 ax.legend()
 
-
 plt.tight_layout()
 plt.savefig(pathPlots+"plot_extra_studio_vs_depressione.png")
 plt.close()
@@ -442,7 +462,6 @@ class_rates = pd.crosstab(
     df["Cost_quintile"], df["Family_background"],
     values=df["Depression"].eq("Yes"), aggfunc="mean"
 ).mul(100)
-
 
 class_rates = class_rates.round(1).astype(str) + "%"
 class_rates = class_rates.mask(class_counts < 20, class_rates + "!")
@@ -511,7 +530,6 @@ association_table = tabulate(
 
 logToFile("\n### ASSOCIAZIONE VARIABILI CATEGORICHE E DEPRESSIONE", pathDebug)
 logToFile(association_table, pathDebug)
-
 
 
 ### DEPRESSIONE PER GENERE E STATO DI RELAZIONE #
@@ -593,7 +611,7 @@ numeric_association_table[
     ["Median (No)", "Median (Yes)", "U Statistic", "Effect size (A)"]
 ].round(2)
 
-
+logToFile("\n### ASSOCIAZIONE VARIABILI NUMERICHE CON DEPRESSIONE", pathDebug)
 logToFile(tabulate(numeric_association_table, headers="keys", tablefmt="rounded_grid", showindex=False), pathDebug)
 
 
@@ -615,7 +633,8 @@ cgpa_rates = (
     .reset_index()
 )
 
-logToFile(tabulate(cgpa_rates.round(2),headers="keys",tablefmt="rounded_grid",showindex=False), pathDebug)
+logToFile("\n### TASSO DI DEPRESSIONE PER QUINTILI DI CGPA", pathDebug)
+logToFile(tabulate(cgpa_rates.round(2), headers="keys", tablefmt="rounded_grid", showindex=False), pathDebug)
 
 fig, ax = plt.subplots(figsize=(9, 5))
 
@@ -636,7 +655,7 @@ plt.savefig(pathPlots+"plot_cgpa_quintili_depressione.png")
 plt.close()
 
 
-### TEST CHI-QUADRO E V DI CRAMÉR #
+### TEST CHI-QUADRO E V DI CRAMÉR CGPA #
 
 cgpa_table = pd.crosstab(df["CGPA_quintile"], df["Depression"])
 chi2_cg, p_cg, dof_cg, _ = chi2_contingency(cgpa_table)
@@ -669,9 +688,9 @@ for col in ["P-value", "P-value corr."]:
         lambda p: "< 0.001" if pd.notna(p) and p < 0.001 else f"{p:.3f}" if pd.notna(p) else "-"
     )
 
+logToFile("\n### TEST CHI-QUADRO E V DI CRAMÉR PER CGPA", pathDebug)
 logToFile(tabulate(cgpa_quintile_table.fillna("-"), headers="keys",
                    tablefmt="rounded_grid", showindex=False), pathDebug)
-
 
 
 # CORRELAZIONE DI SPEARMAN #
@@ -681,6 +700,7 @@ numeric_corr = df[numeric_columns].corr(method="spearman").round(2)
 tabella_corr = numeric_corr.copy()
 tabella_corr.insert(0, "Metodo", "Spearman")
 
+logToFile("\n### CORRELAZIONE DI SPEARMAN", pathDebug)
 logToFile(tabulate(
     tabella_corr, headers="keys", tablefmt="rounded_grid"
 ), pathDebug)
@@ -709,7 +729,6 @@ plt.savefig(pathPlots+"plot_correlazione_spearman.png", bbox_inches="tight")
 plt.close()
 
 
-
 ### PROFILI DIVERSI DI STUDENTI IN BASE ALLE VARIE CATEGORIE #
 
 profile_columns = ["Relationship_status", "friend_circle", "Family_background", "Living_style"]
@@ -723,6 +742,7 @@ profile_summary = (
     .reset_index()
 )
 
+logToFile("\n### ANALISI PROFILI STUDENTI", pathDebug)
 logToFile(f"Profili totali: {len(profile_summary)}", pathDebug)
 
 profile_summary = profile_summary[profile_summary["Total_Students"] >= 20].copy()
@@ -747,16 +767,17 @@ profile_summary[["Depression_Rate", "CI_low", "CI_high"]] = (
 
 profile_summary = profile_summary.sort_values("Depression_Rate", ascending=False)
 
-logToFile(tabulate(profile_summary.head(10),headers="keys",tablefmt="rounded_grid",showindex=False), pathDebug)
-
+logToFile(tabulate(profile_summary.head(10), headers="keys", tablefmt="rounded_grid", showindex=False), pathDebug)
 
 
 ### SEZIONE MODELLI
 
-
 TARGET = "Depression"
 num_cols = ["Age", "Current_semester", "CGPA", "Cost_without_study"]
-cat_cols = [col for col in categorical_columns if col != TARGET]
+cat_cols = [
+    col for col in categorical_columns 
+    if col not in [TARGET, "Marital_status", "Health_condition"]
+]
 
 df_ready = df.copy()
 df_tree = df_ready.copy()
@@ -787,3 +808,278 @@ logToFile("\n### PREPARAZIONE DATASET MODELLI", pathDebug)
 logToFile(f"Distribuzione target:\n{df_tree[TARGET].value_counts()}", pathDebug)
 logToFile(f"Dimensioni finali dataset: {df_tree.shape}", pathDebug)
 
+
+### SPLIT DEL DATASET IN TRAIN E TEST, STRATIFICANDO PER MANTENERE OMOGENEITA DEI DATI
+
+X, y = df_tree[num_cols + cat_cols], df_tree[TARGET]
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=random_seed, stratify=y
+)
+
+logToFile("\n### SPLIT DATASET (Train/Test)", pathDebug)
+logToFile(f"Train shape: {X_train.shape} | Test shape: {X_test.shape}", pathDebug)
+logToFile(f"\nDistribuzione target train (%):\n{y_train.value_counts(normalize=True).round(3)}", pathDebug)
+logToFile(f"\nDistribuzione target test (%):\n{y_test.value_counts(normalize=True).round(3)}", pathDebug)
+
+
+### Encoding delle variabili categoriche
+
+X_train_encoded = pd.get_dummies(X_train, columns=cat_cols, drop_first=True, dtype=float)
+X_test_encoded = pd.get_dummies(X_test, columns=cat_cols, drop_first=True, dtype=float).reindex(columns=X_train_encoded.columns, fill_value=0)
+
+logToFile("\n### ENCODING FEATURE CATEGORICHE", pathDebug)
+logToFile(f"Train encoded: {X_train_encoded.shape} | Test encoded: {X_test_encoded.shape}", pathDebug)
+logToFile(f"Feature finali:\n{X_train_encoded.columns.tolist()}", pathDebug)
+
+
+### Albero baseline
+
+baseline_tree = DecisionTreeClassifier(
+    max_depth=3, min_samples_leaf=20, class_weight="balanced", random_state=random_seed
+).fit(X_train_encoded, y_train)
+
+y_pred = baseline_tree.predict(X_test_encoded)
+y_prob = baseline_tree.predict_proba(X_test_encoded)[:, 1]
+
+acc = accuracy_score(y_test, y_pred)
+prec = precision_score(y_test, y_pred)
+rec = recall_score(y_test, y_pred)
+f1 = f1_score(y_test, y_pred)
+auc = roc_auc_score(y_test, y_prob)
+
+logToFile("\n### ALBERO BASELINE - RISULTATI TEST", pathDebug)
+logToFile(f"Baseline Tree [Test] -> Acc: {acc:.3f} | Prec: {prec:.3f} | Rec: {rec:.3f} | F1: {f1:.3f} | ROC-AUC: {auc:.3f}", pathDebug)
+
+
+### OTTIMIZZAZIONE DEI PARAMETRI GRID SEARCH
+
+grid_params_path = "data/gridSearch.par"
+run_gridsearch = True
+
+if os.path.exists(grid_params_path):
+    scelta = input(f"\nTrovato il file '{grid_params_path}'. Vuoi utilizzare i parametri salvati? [s/n]: ").strip().lower()
+    if scelta in ["s", "si", "y", "yes", ""]:
+        run_gridsearch = False
+        best_params = joblib.load(grid_params_path)
+        best_tree = DecisionTreeClassifier(
+            **best_params, class_weight="balanced", random_state=random_seed
+        ).fit(X_train_encoded, y_train)
+        logToFile("\n### GRIDSEARCH / PARAMETRI OTTIMALI", pathDebug)
+        logToFile(f"Caricamento iperparametri salvati da '{grid_params_path}':\n{best_params}", pathDebug)
+
+if run_gridsearch:
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_seed)
+    param_grid = {
+        "criterion": ["gini", "entropy"],
+        "max_depth": [2, 3, 4, 5, 6, 8, 10, None],
+        "min_samples_split": [2, 5, 10, 20],
+        "min_samples_leaf": [1, 5, 10, 20, 30],
+        "ccp_alpha": [0.0, 0.001, 0.005, 0.01, 0.02]
+    }
+
+    total_fits = np.prod([len(v) for v in param_grid.values()]) * cv.n_splits
+    grid_search = GridSearchCV(
+        DecisionTreeClassifier(class_weight="balanced", random_state=random_seed),
+        param_grid, scoring="accuracy", cv=cv, n_jobs=-1
+    )
+
+    with tqdm_joblib(total=total_fits, desc="GridSearch Tree"):
+        grid_search.fit(X_train_encoded, y_train)
+
+    best_params = grid_search.best_params_
+    os.makedirs("data", exist_ok=True)
+    joblib.dump(best_params, grid_params_path)
+    best_tree = grid_search.best_estimator_
+
+    logToFile("\n### GRIDSEARCH / PARAMETRI OTTIMALI", pathDebug)
+    logToFile(f"Migliori iperparametri: {best_params}", pathDebug)
+    logToFile(f"Miglior CV score (Accuracy): {grid_search.best_score_:.3f}", pathDebug)
+
+
+# Valutazione finale
+y_pred = best_tree.predict(X_test_encoded)
+y_prob = best_tree.predict_proba(X_test_encoded)[:, 1]
+
+acc, prec, rec, f1, auc = (
+    accuracy_score(y_test, y_pred),
+    precision_score(y_test, y_pred),
+    recall_score(y_test, y_pred),
+    f1_score(y_test, y_pred),
+    roc_auc_score(y_test, y_prob)
+)
+
+cm_table = tabulate(confusion_matrix(y_test, y_pred), headers=["Pred No (0)", "Pred Yes (1)"], tablefmt="rounded_grid")
+
+logToFile("\n### MODELLO FINALE (BEST TREE) - VALUTAZIONE TEST SET", pathDebug)
+logToFile(f"Best Tree [Test] -> Acc: {acc:.3f} | Prec: {prec:.3f} | Rec: {rec:.3f} | F1: {f1:.3f} | ROC-AUC: {auc:.3f}", pathDebug)
+logToFile(f"\nConfusion matrix:\n{cm_table}", pathDebug)
+logToFile(f"\nClassification report:\n{classification_report(y_test, y_pred)}", pathDebug)
+
+### PLOT ROC CURVE
+
+from sklearn.metrics import RocCurveDisplay
+
+RocCurveDisplay.from_predictions(y_test, y_prob, name="Decision Tree")
+plt.title("ROC curve — Decision Tree")
+plt.tight_layout()
+
+plt.savefig(pathPlots + "plot_roc_curve.png")
+plt.savefig(pathPlots + "plot_roc_curve.svg")
+plt.close()
+
+### PLOT ROC CURVE
+
+plt.figure(figsize=(20, 10))
+plot_tree(
+    best_tree,
+    feature_names=X_train_encoded.columns,
+    class_names=["No Depression", "Depression"],
+    filled=True,
+    rounded=True,
+    max_depth=3,
+    fontsize=9
+)
+plt.title("Albero di classificazione — primi 3 livelli")
+plt.tight_layout()
+
+plt.savefig(pathPlots + "plot_decision_tree.png")
+plt.savefig(pathPlots + "plot_decision_tree.svg")
+plt.close()
+
+### PLOT VARIABILI PIU IMPORTANTI
+
+importances = (
+    pd.DataFrame({
+        "Feature": X_train_encoded.columns,
+        "Importance": best_tree.feature_importances_
+    })
+    .sort_values("Importance", ascending=False)
+    .head(15)
+)
+
+logToFile("\n### FEATURE IMPORTANCE - TOP 15", pathDebug)
+logToFile(tabulate(importances, headers="keys", tablefmt="rounded_grid", showindex=False), pathDebug)
+
+fig, ax = plt.subplots(figsize=(10, 6))
+sns.barplot(data=importances, x="Importance", y="Feature", palette="Oranges_r", ax=ax)
+ax.set_title("Feature Importance — Decision Tree")
+plt.tight_layout()
+
+plt.savefig(pathPlots + "plot_feature_importance.png")
+plt.savefig(pathPlots + "plot_feature_importance.svg")
+plt.close()
+
+
+### RANDOM FOREST 
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import PrecisionRecallDisplay
+
+TARGET = "Depression"
+num_cols = ["Age", "Current_semester", "CGPA", "Cost_without_study"]
+excluded_cols = ["Health_condition"]
+cat_cols = [
+    "Gender",
+    "Family_background",
+    "Relationship_status",
+    "Marital_status",
+    "Living_style",
+    "friend_circle",
+    "Home_division"
+]
+
+logToFile("\n### CONFIGURAZIONE RANDOM FOREST", pathDebug)
+logToFile(f"Target: {TARGET}\nNumeriche: {num_cols}\nCategoriche: {cat_cols}\nEscluse: {excluded_cols}", pathDebug)
+
+### PREPARAZIONE DATASET
+
+df_rf = df_ready.copy()
+
+# Rimuove eventuali colonne di clustering
+cluster_cols = [col for col in df_rf.columns if col.startswith("cluster")]
+df_rf = df_rf.drop(columns=cluster_cols, errors="ignore")
+
+# Mantiene solo le colonne necessarie e rimuove righe incomplete
+needed_cols = [TARGET] + num_cols + cat_cols
+df_rf = df_rf[needed_cols].dropna(subset=needed_cols).copy()
+
+# Codifica del target binario
+df_rf[TARGET] = (
+    df_rf[TARGET]
+    .astype(str)
+    .str.strip()
+    .str.lower()
+    .map({"yes": 1, "no": 0})
+)
+
+if df_rf[TARGET].isna().any():
+    raise ValueError("Il target contiene valori diversi da Yes/No.")
+
+df_rf[TARGET] = df_rf[TARGET].astype(int)
+
+logToFile("\n### PREPARAZIONE DATASET RANDOM FOREST", pathDebug)
+logToFile(f"Distribuzione del target:\n{df_rf[TARGET].value_counts(dropna=False)}", pathDebug)
+logToFile(f"Dimensioni dataset: {df_rf.shape}", pathDebug)
+
+### SPLIT DATASET IN TRAIN E TEST
+
+X = df_rf[num_cols + cat_cols]
+y = df_rf[TARGET]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=random_seed,
+    stratify=y
+)
+
+logToFile("\n### SPLIT DATASET RANDOM FOREST (Train/Test)", pathDebug)
+logToFile(f"Train shape: {X_train.shape} | Test shape: {X_test.shape}", pathDebug)
+logToFile(f"\nDistribuzione target train (%):\n{y_train.value_counts(normalize=True).round(3)}", pathDebug)
+logToFile(f"\nDistribuzione target test (%):\n{y_test.value_counts(normalize=True).round(3)}", pathDebug)
+
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+
+
+### STANDARDIZZAZIONE VAR NUMERICHE E HOT ENCODER DELLE CATEGORICHE
+
+numeric_transformer = StandardScaler()
+
+categorical_transformer = OneHotEncoder(
+    handle_unknown="ignore",
+    drop="first",
+    sparse_output=False
+)
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("num", numeric_transformer, num_cols), 
+        ("cat", categorical_transformer, cat_cols)
+    ],
+    remainder="drop"
+)
+
+logToFile("\n### PREPROCESSING PIPELINE RANDOM FOREST", pathDebug)
+logToFile("ColumnTransformer configurato (StandardScaler per feature numeriche, OneHotEncoder drop='first' per categoriche).", pathDebug)
+
+
+### PIPELINE MODELLO
+
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+
+rf_pipeline = Pipeline(
+    steps=[
+        ("preprocessor", preprocessor),
+        ("classifier", RandomForestClassifier(
+            random_state=random_seed,
+            n_jobs=-1,
+            class_weight="balanced"
+        ))
+    ]
+)
+
+logToFile("\n### PIPELINE RANDOM FOREST INIZIALIZZATA", pathDebug)
+logToFile("Pipeline configurata con preprocessor e RandomForestClassifier (class_weight='balanced').", pathDebug)
