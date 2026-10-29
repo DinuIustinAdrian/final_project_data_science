@@ -1,8 +1,0 @@
-streamlit>=1.50
-pandas>=2.0
-numpy
-plotly
-statsmodels
-pyarrow
-openpyxl
-kaleido
