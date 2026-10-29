@@ -1260,6 +1260,8 @@ def crea_scheda_grafico(df, colonne, numero):
             selettore_aggregazione.value
         )
 
+        
+
         # Colori predefiniti, letti prima di applicare quelli scelti.
         predefiniti = {}
 
@@ -3031,165 +3033,156 @@ def addestra_modelli(df, config):
     errori = {}
 
     for nome in config["modelli"]:
-
-        try:
-
-            stimatore, scala = crea_modello(
-                nome,
-                config["parametri"],
-                config["seed"],
-                len(X_train)
-            )
-
-            pipeline = Pipeline([
-                (
-                    "prep",
-                    crea_preprocessore(
-                        colonne_numeriche,
-                        colonne_categoriche,
-                        scala
-                    )
-                ),
-                ("modello", stimatore)
-            ])
-
-            inizio = time.perf_counter()
-
-            pipeline.fit(X_train, y_train)
-
-            durata = time.perf_counter() - inizio
-
-            y_pred_train = np.asarray(pipeline.predict(X_train)).ravel()
-            y_pred = np.asarray(pipeline.predict(X_test)).ravel()
-
-            precisione, richiamo, f1, _ = precision_recall_fscore_support(
-                y_test,
-                y_pred,
-                average="weighted",
-                zero_division=0
-            )
-
-            # --- ROC AUC e curva ROC (curva solo per target binari) ---
-            auc = np.nan
-            curva_roc = None
-
             try:
-
-                probabilita = pipeline.predict_proba(X_test)
-
-                if len(classi) == 2:
-
-                    auc = roc_auc_score(y_test, probabilita[:, 1])
-
-                    fpr, tpr, _ = roc_curve(y_test, probabilita[:, 1])
-
-                    curva_roc = (fpr, tpr, auc)
-
-                else:
-
-                    auc = roc_auc_score(
-                        y_test,
-                        probabilita,
-                        multi_class="ovr",
-                        average="weighted"
-                    )
-
-            except ValueError:
-                pass
-
-            # --- Cross-validation (facoltativa) ---
-            cv_media = np.nan
-            cv_dev_std = np.nan
-
-            if config["cv"]:
-
-                try:
-
-                    punteggi = cross_val_score(
-                        clone(pipeline),
-                        X_train,
-                        y_train,
-                        cv=5,
-                        scoring="accuracy"
-                    )
-
-                    cv_media = float(np.mean(punteggi))
-                    cv_dev_std = float(np.std(punteggi))
-
-                except Exception as errore_cv:
-
-                    avvisi.append(
-                        f"{nome}: cross-validation non eseguita "
-                        f"({type(errore_cv).__name__})."
-                    )
-
-            importanze, titolo_importanze = calcola_importanze(
-                pipeline,
-                X_test,
-                y_test,
-                config["seed"]
-            )
-
-            testo_albero = None
-
-            if nome == "Albero decisionale":
-
-                testo_albero = export_text(
-                    pipeline.named_steps["modello"],
-                    feature_names=nomi_feature(pipeline),
-                    max_depth=4
+                stimatore, scala = crea_modello(
+                    nome,
+                    config["parametri"],
+                    config["seed"],
+                    len(X_train)
                 )
 
-            report = classification_report(
-                y_test,
-                y_pred,
-                labels=labels,
-                target_names=classi,
-                output_dict=True,
-                zero_division=0
-            )
+                pipeline = Pipeline([
+                    (
+                        "prep",
+                        crea_preprocessore(
+                            colonne_numeriche,
+                            colonne_categoriche,
+                            scala
+                        )
+                    ),
+                    ("modello", stimatore)
+                ])
 
-            report = (
-                pd.DataFrame(report)
-                .transpose()
-                .reset_index()
-                .rename(columns={"index": "Classe"})
-                .round(3)
-            )
+                inizio = time.perf_counter()
+                pipeline.fit(X_train, y_train)
+                durata = time.perf_counter() - inizio
 
-            riga = {
-                "Modello": nome,
-                "Accuracy train": accuracy_score(y_train, y_pred_train),
-                "Accuracy test": accuracy_score(y_test, y_pred),
-                "Precision": precisione,
-                "Recall": richiamo,
-                "F1": f1,
-                "ROC AUC": auc,
-                "Tempo (s)": durata
-            }
+                # --- SOGLIA DI DECISIONE PERSONALIZZATA ---
+                if len(classi) == 2 and hasattr(pipeline, "predict_proba"):
+                    soglia = config.get("soglia", 0.5)
 
-            if config["cv"]:
-                riga["CV accuracy (media)"] = cv_media
-                riga["CV (dev. std.)"] = cv_dev_std
+                    prob_train = pipeline.predict_proba(X_train)[:, 1]
+                    y_pred_train = (prob_train >= soglia).astype(int)
 
-            righe.append(riga)
+                    prob_test = pipeline.predict_proba(X_test)[:, 1]
+                    y_pred = (prob_test >= soglia).astype(int)
+                else:
+                    y_pred_train = np.asarray(pipeline.predict(X_train)).ravel()
+                    y_pred = np.asarray(pipeline.predict(X_test)).ravel()
 
-            dettagli[nome] = {
-                "matrice": confusion_matrix(
+                # --- RICALCOLO METRICHE ---
+                acc_train = accuracy_score(y_train, y_pred_train)
+                acc_test = accuracy_score(y_test, y_pred)
+
+                precisione, richiamo, f1, _ = precision_recall_fscore_support(
                     y_test,
                     y_pred,
-                    labels=labels
-                ),
-                "importanze": importanze,
-                "titolo_importanze": titolo_importanze,
-                "testo_albero": testo_albero,
-                "report": report,
-                "roc": curva_roc
-            }
+                    average="weighted",
+                    zero_division=0
+                )
 
-        except Exception as errore:
+                # --- ROC AUC e curva ROC ---
+                auc = np.nan
+                curva_roc = None
+                try:
+                    probabilita = pipeline.predict_proba(X_test)
+                    if len(classi) == 2:
+                        auc = roc_auc_score(y_test, probabilita[:, 1])
+                        fpr, tpr, _ = roc_curve(y_test, probabilita[:, 1])
+                        curva_roc = (fpr, tpr, auc)
+                    else:
+                        auc = roc_auc_score(
+                            y_test,
+                            probabilita,
+                            multi_class="ovr",
+                            average="weighted"
+                        )
+                except Exception:
+                    pass
 
-            errori[nome] = f"{type(errore).__name__}: {errore}"
+                # --- CROSS-VALIDATION (USA CLONE PER NON CORROMPERE IL MODELLO) ---
+                cv_media = np.nan
+                cv_dev_std = np.nan
+                if config["cv"]:
+                    try:
+                        punteggi = cross_val_score(
+                            clone(pipeline),  # <-- USO OBBLIGATORIO DI CLONE
+                            X_train,
+                            y_train,
+                            cv=5,
+                            scoring="accuracy"
+                        )
+                        cv_media = float(np.mean(punteggi))
+                        cv_dev_std = float(np.std(punteggi))
+                    except Exception as errore_cv:
+                        avvisi.append(
+                            f"{nome}: cross-validation non eseguita ({type(errore_cv).__name__})."
+                        )
+
+                importanze, titolo_importanze = calcola_importanze(
+                    pipeline,
+                    X_test,
+                    y_test,
+                    config["seed"]
+                )
+
+                testo_albero = None
+                if nome == "Albero decisionale":
+                    testo_albero = export_text(
+                        pipeline.named_steps["modello"],
+                        feature_names=nomi_feature(pipeline),
+                        max_depth=4
+                    )
+
+                report = classification_report(
+                    y_test,
+                    y_pred,
+                    labels=labels,
+                    target_names=classi,
+                    output_dict=True,
+                    zero_division=0
+                )
+
+                report = (
+                    pd.DataFrame(report)
+                    .transpose()
+                    .reset_index()
+                    .rename(columns={"index": "Classe"})
+                    .round(3)
+                )
+
+                riga = {
+                    "Modello": nome,
+                    "Accuracy train": acc_train,
+                    "Accuracy test": acc_test,
+                    "Precision": precisione,
+                    "Recall": richiamo,
+                    "F1": f1,
+                    "ROC AUC": auc,
+                    "Tempo (s)": durata
+                }
+
+                if config["cv"]:
+                    riga["CV accuracy (media)"] = cv_media
+                    riga["CV (dev. std.)"] = cv_dev_std
+
+                righe.append(riga)
+
+                dettagli[nome] = {
+                    "matrice": confusion_matrix(
+                        y_test,
+                        y_pred,
+                        labels=labels
+                    ),
+                    "importanze": importanze,
+                    "titolo_importanze": titolo_importanze,
+                    "testo_albero": testo_albero,
+                    "report": report,
+                    "roc": curva_roc
+                }
+
+            except Exception as errore:
+                errori[nome] = f"{type(errore).__name__}: {errore}"
 
     if len(righe) == 0:
 
@@ -3330,6 +3323,15 @@ par_knn_k = pn.widgets.IntInput(
     name="KNN: numero di vicini",
     value=5,
     start=1
+)
+
+mod_soglia = pn.widgets.FloatSlider(
+    name="Soglia di decisione (Target Binario)",
+    start=0.05,
+    end=0.95,
+    step=0.05,
+    value=0.50,
+    sizing_mode="stretch_width"
 )
 
 scheda_iperparametri = pn.Card(
@@ -3480,6 +3482,7 @@ def leggi_configurazione():
         "target": mod_target.value,
         "feature": list(mod_feature.value),
         "test_size": float(mod_test_size.value),
+        "soglia": float(mod_soglia.value),
         "seed": int(valore_o(mod_seed, 42)),
         "stratifica": bool(mod_stratifica.value),
         "cv": bool(mod_cv.value),
@@ -3874,6 +3877,7 @@ scheda_modelli = pn.Column(
             mod_target,
             mod_feature,
             mod_test_size,
+            mod_soglia,
             mod_seed,
             mod_stratifica,
             mod_cv,
