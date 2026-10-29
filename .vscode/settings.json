@@ -1,0 +1,7 @@
+{
+<<<<<<< HEAD
+    "python.analysis.languageServerMode": "light"
+=======
+    "python.analysis.autoImportCompletions": false
+>>>>>>> main
+}
