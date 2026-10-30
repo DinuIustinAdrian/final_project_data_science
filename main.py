@@ -52,9 +52,7 @@ if os.path.exists(LOG):
 model_results = {}  # riempito da evaluate(), usato nel confronto finale
 
 
-### ============================================================
-### FUNZIONI DI SUPPORTO
-### ============================================================
+### definizioni funzioni per ridurre lungheza codice
 class tqdm_joblib:
     """Progress bar per GridSearchCV / RandomizedSearchCV con n_jobs=-1."""
     def __init__(self, total, desc):
@@ -120,7 +118,7 @@ def rate_ct(a, b, data=None):
 
 
 def load_or_search(path, search):
-    """Carica gli iperparametri salvati (se l'utente accetta) oppure lancia search() e li salva."""
+    """Carica gli parametri migiori salvati (se l'utente accetta) oppure lancia search() e li salva."""
     if os.path.exists(path) and input(
         f"\nTrovato il file '{path}'. Vuoi utilizzare i parametri salvati? [s/n]: "
     ).strip().lower() in ("s", "si", "y", "yes", ""):
@@ -133,7 +131,7 @@ def load_or_search(path, search):
 
 
 def split(cols, label):
-    """Train/test stratificato 80/20 su df[cols] (righe incomplete escluse)."""
+    """Train/test stratificato 80/20 su df[cols] ."""
     d = df[cols + ["dep"]].dropna()
     X_tr, X_te, y_tr, y_te = train_test_split(
         d[cols], d["dep"], test_size=0.2, random_state=SEED, stratify=d["dep"]
@@ -191,7 +189,7 @@ OVERALL = df["dep"].mean() * 100
 ### ============================================================
 ### ANALISI ESPLORATIVA: GRAFICI
 ### ============================================================
-# Distribuzione età per genere (conteggi a sinistra, densità a destra)
+# Distribuzione età per genere 
 fig, ax1 = plt.subplots(figsize=(10, 6))
 hist_kw = dict(data=df, x="Age", hue="Gender", discrete=True, multiple="dodge", shrink=0.85)
 sns.histplot(**hist_kw, stat="count", ax=ax1)
@@ -264,7 +262,7 @@ health = pd.crosstab(df["Health_condition"], df[TARGET], margins=True)
 health["Tasso_depressione (%)"] = health["Yes"] / health["All"] * 100
 log_table("CONDIZIONE DI SALUTE VS DEPRESSIONE", health, index=True)
 
-# Stato di relazione x cerchia di amici (heatmap)
+# Stato di relazione x cerchia di amici 
 rate = rate_ct("Relationship_status", "friend_circle")
 n = pd.crosstab(df["Relationship_status"], df["friend_circle"])
 fig, ax = plt.subplots(figsize=(8, 6))
