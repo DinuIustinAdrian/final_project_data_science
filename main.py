@@ -1,879 +1,787 @@
-
-### Import delle librerie
+### ============================================================
+### IMPORT E CONFIGURAZIONE
+### ============================================================
 import os
 import warnings
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy.stats import chi2_contingency, mannwhitneyu
-from statsmodels.stats.proportion import proportion_confint
-from tabulate import tabulate
-import statsmodels.api as sm
-
-from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV, RandomizedSearchCV, RepeatedStratifiedKFold, cross_val_score, cross_val_predict
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.tree import DecisionTreeClassifier, plot_tree
-from sklearn.ensemble import RandomForestClassifier
-from catboost import CatBoostClassifier
-
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    roc_auc_score,
-    matthews_corrcoef,
-    confusion_matrix,
-    classification_report,
-    precision_recall_curve,
-    PrecisionRecallDisplay,
-    RocCurveDisplay,
-    roc_curve
-)
-
-from scipy.stats import randint
-import joblib
-from tqdm import tqdm
 from itertools import product
-import matplotlib
 
-matplotlib.use("Agg")  # Disattiva la GUI per evitare crash con la parallelizzazione
-plt.style.use("fivethirtyeight")
+os.environ["PYTHONWARNINGS"] = "ignore"  # vale anche per i worker joblib/loky
 warnings.filterwarnings("ignore")
 
-random_seed = 42
+import joblib
+import matplotlib
+matplotlib.use("Agg")  # niente GUI: evita crash con la parallelizzazione
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import statsmodels.api as sm
+from catboost import CatBoostClassifier
+from scipy.stats import chi2_contingency, mannwhitneyu, randint
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score, classification_report, confusion_matrix,
+    f1_score, matthews_corrcoef, precision_recall_curve, precision_score,
+    recall_score, roc_auc_score, roc_curve,
+)
+from sklearn.model_selection import (
+    GridSearchCV, RandomizedSearchCV, RepeatedStratifiedKFold, StratifiedKFold,
+    cross_val_predict, cross_val_score, train_test_split,
+)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+from statsmodels.stats.proportion import proportion_confint
+from tabulate import tabulate
+from tqdm import tqdm
 
+SEED = 42
+TARGET = "Depression"
+DATA_FILE = "Student_Depression_Dataset.csv"
+LOG, PLOTS = "data/debug/log.txt", "data/plots/"
+PAR_DIR = "data/"  # file .par con gli iperparametri salvati (gridSearch, randomSearchRandomForest, catboost, logit)
+NUM = ["Age", "Current_semester", "CGPA", "Cost_without_study"]
+
+plt.style.use("fivethirtyeight")
+os.makedirs(os.path.dirname(LOG), exist_ok=True)
+os.makedirs(PLOTS, exist_ok=True)
+if os.path.exists(LOG):
+    os.remove(LOG)
+
+model_results = {}  # riempito da evaluate(), usato nel confronto finale
+
+
+### ============================================================
+### FUNZIONI DI SUPPORTO
+### ============================================================
 class tqdm_joblib:
-    def __init__(self, total, desc="GridSearchCV"):
+    """Progress bar per GridSearchCV / RandomizedSearchCV con n_jobs=-1."""
+    def __init__(self, total, desc):
         self.pbar = tqdm(total=total, desc=desc)
         self.old_cb = joblib.parallel.BatchCompletionCallBack
         pbar = self.pbar
+
         class CB(joblib.parallel.BatchCompletionCallBack):
             def __call__(self, *args, **kwargs):
                 pbar.update(n=self.batch_size)
                 super().__call__(*args, **kwargs)
         joblib.parallel.BatchCompletionCallBack = CB
-    def __enter__(self): return self
+
+    def __enter__(self):
+        return self
+
     def __exit__(self, *args):
         joblib.parallel.BatchCompletionCallBack = self.old_cb
         self.pbar.close()
 
-def logToFile(data, output):
+
+def log(data):
     print(data)
-    if output is not None:
-        with open(output, 'a', encoding='utf-8') as file:
-            file.write(str(data) + '\n')
+    with open(LOG, "a", encoding="utf-8") as f:
+        f.write(str(data) + "\n")
 
-### DICHIARAZIONE FILE DI LOG E PLOT
-pathDebug = 'data/debug/log.txt'
-pathPlots = 'data/plots/'
-os.makedirs('data/debug', exist_ok=True)
-os.makedirs(pathPlots, exist_ok=True)
 
-### Pulizia file di log
-if os.path.exists(pathDebug):
-    os.remove(pathDebug)
+def log_table(title, data, floatfmt=".2f", index=False, **kw):
+    log(f"\n### {title}")
+    log(tabulate(data, headers="keys", tablefmt="rounded_grid", floatfmt=floatfmt, showindex=index, **kw))
 
-### Import dei file
-path_file = r'Student_Depression_Dataset.csv'
-df = pd.read_csv(path_file)
 
-### Analisi missing values
-colMissing = df.isna().sum().to_frame(name='Valori mancanti')
-colMissing = tabulate(colMissing, headers="keys", tablefmt='rounded_grid')
+def save(name, svg=False, **kw):
+    plt.tight_layout()
+    plt.savefig(f"{PLOTS}{name}.png", bbox_inches="tight", **kw)
+    if svg:
+        plt.savefig(f"{PLOTS}{name}.svg", bbox_inches="tight")
+    plt.close()
 
-logToFile('\n### ANALISI DATI MANCANTI', pathDebug)
-logToFile(colMissing, pathDebug)
 
-stats = df.describe()
-stats = tabulate(stats, headers="keys", tablefmt="rounded_grid", floatfmt=".2f")
+def fmt_p(p):
+    return "-" if pd.isna(p) else "< 0.001" if p < 0.001 else f"{p:.3f}"
 
-logToFile('\n### Analisi statistica colonne numeriche', pathDebug)
-logToFile(stats, pathDebug)
 
-# Coerenza logica: relazione e stato civile
-cross_rel_mar = pd.crosstab(df["Relationship_status"], df["Marital_status"])
-logToFile('\n### RELATIONSHIP STATUS VS MARITAL STATUS', pathDebug)
-logToFile(tabulate(cross_rel_mar, headers="keys", tablefmt="rounded_grid"), pathDebug)
+def fmt_p_cols(t, cols):
+    t = t.copy()
+    for c in cols:
+        t[c] = t[c].map(fmt_p)
+    return t
 
-### PLOT Age Distribution by Gender
-fig, ax1 = plt.subplots(figsize=(10, 6))
 
-sns.histplot(
-    data=df, x="Age", hue="Gender", discrete=True, multiple="dodge",
-    shrink=0.85, stat="count", ax=ax1
-)
-ax1.set_title("Age Distribution by Gender")
-ax1.set_xlabel("Age")
-ax1.set_ylabel("Number of Students")
+def assoc(table):
+    """Chi-quadro + V di Cramér su una tabella di contingenza -> (chi2, p, dof, V)."""
+    chi2, p, dof, _ = chi2_contingency(table)
+    k = min(table.shape) - 1
+    return chi2, p, dof, (np.sqrt(chi2 / (table.to_numpy().sum() * k)) if k > 0 else np.nan)
 
-ax2 = ax1.twinx()
-sns.histplot(
-    data=df, x="Age", hue="Gender", discrete=True, multiple="dodge",
-    shrink=0.85, stat="density", alpha=1, ax=ax2
-)
-ax2.grid(False)
-ax2.set_ylabel("Density")
 
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_AgeDistribution_Gender.png", format="png", bbox_inches="tight")
-plt.savefig(pathPlots + "plot_AgeDistribution_Gender.svg", format="svg", bbox_inches="tight")
-plt.close()
+def rate_ct(a, b, data=None):
+    """Tasso di depressione (%) per ogni combinazione delle colonne a (righe) e b (colonne)."""
+    data = df if data is None else data
+    return pd.crosstab(data[a], data[b], values=data["dep"], aggfunc="mean").mul(100)
 
-### PLOT Depression status by students
-depression_counts = df["Depression"].value_counts()
-depression_pct = df["Depression"].value_counts(normalize=True).mul(100).round(2)
 
-fig, ax = plt.subplots(figsize=(7, 6))
-ax = sns.countplot(data=df, x="Depression")
+def load_or_search(path, search):
+    """Carica gli iperparametri salvati (se l'utente accetta) oppure lancia search() e li salva."""
+    if os.path.exists(path) and input(
+        f"\nTrovato il file '{path}'. Vuoi utilizzare i parametri salvati? [s/n]: "
+    ).strip().lower() in ("s", "si", "y", "yes", ""):
+        params = joblib.load(path)
+    else:
+        params = search()
+        joblib.dump(params, path)
+    log(f"\n### IPERPARAMETRI ({path})\n{params}")
+    return params
 
-for container in ax.containers:
-    labels = [f"{int(bar.get_height())}\n({bar.get_height() / len(df) * 100:.1f}%)" for bar in container]
-    ax.bar_label(container, labels=labels, padding=3)
 
-ax.set_title("Reported Depression Status Among Students", fontsize=14, pad=12)
-ax.set_xlabel("Depression Status")
-ax.set_ylabel("Number of Students")
-ax.set_ylim(top=ax.get_ylim()[1] * 1.15)
-
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_DepressionStatus.png", format="png", bbox_inches="tight")
-plt.savefig(pathPlots + "plot_DepressionStatus.svg", format="svg", bbox_inches="tight")
-plt.close()
-
-### Plot depressione in base a categoria
-def plot_depression_comparison(column, title=None):
-    title = title or column.replace("_", " ").title()
-    counts = pd.crosstab(df[column], df["Depression"]).reindex(columns=["No", "Yes"], fill_value=0)
-    pct = counts.div(counts.sum(axis=1), axis=0).mul(100)
-    order = counts.sum(axis=1).sort_values(ascending=False).index
-    counts, pct = counts.loc[order], pct.loc[order]
-
-    ax = counts.plot(
-        kind="bar", stacked=True, figsize=(max(8, len(order) * 1.2), 6),
-        color=["tab:blue", "tab:orange"]
+def split(cols, label):
+    """Train/test stratificato 80/20 su df[cols] (righe incomplete escluse)."""
+    d = df[cols + ["dep"]].dropna()
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        d[cols], d["dep"], test_size=0.2, random_state=SEED, stratify=d["dep"]
     )
+    dist = pd.concat([y_tr.value_counts(normalize=True), y_te.value_counts(normalize=True)],
+                     axis=1, keys=["train", "test"]).round(3)
+    log(f"\n### DATASET {label}\nDimensioni: {d.shape} | Train: {X_tr.shape} | Test: {X_te.shape}")
+    log(f"Distribuzione target:\n{dist}")
+    return X_tr, X_te, y_tr, y_te
 
-    for i, container in enumerate(ax.containers):
-        labels = [f"{n}\n({p:.1f}%)" if n > 0 else "" for n, p in zip(counts.iloc[:, i], pct.iloc[:, i])]
-        ax.bar_label(container, labels=labels, label_type="center", fontsize=12)
 
+def evaluate(name, y_true, prob, thr=0.5, params=None, store=True):
+    """Logga le metriche sul test set e (se store) salva i risultati per il confronto finale."""
+    y_true, prob = np.asarray(y_true), np.asarray(prob)
+    pred = (prob >= thr).astype(int)
+    log(f"\n### {name.upper()} - TEST SET (soglia {thr:.3f})")
+    log(f"Acc: {accuracy_score(y_true, pred):.3f} | Prec: {precision_score(y_true, pred):.3f} | "
+        f"Rec: {recall_score(y_true, pred):.3f} | F1: {f1_score(y_true, pred):.3f} | "
+        f"ROC-AUC: {roc_auc_score(y_true, prob):.3f}")
+    cm = tabulate(confusion_matrix(y_true, pred), headers=["Pred No (0)", "Pred Yes (1)"], tablefmt="rounded_grid")
+    log(f"\nConfusion matrix:\n{cm}\n\nClassification report:\n{classification_report(y_true, pred)}")
+    if store:
+        model_results[name] = dict(y_true=y_true, y_prob=prob, y_pred=pred,
+                                   threshold=float(thr), params=dict(params or {}))
+    return pred
+
+
+def plot_importance(name, names, values, cmap, fname):
+    imp = (pd.DataFrame({"Feature": names, "Importance": values})
+           .sort_values("Importance", ascending=False).head(15))
+    log_table(f"FEATURE IMPORTANCE {name.upper()} (TOP 15)", imp, floatfmt=".4f")
+    plt.figure(figsize=(10, 6))
+    sns.barplot(data=imp, x="Importance", y="Feature", hue="Feature", palette=cmap, legend=False)
+    plt.title(f"Feature importance — {name}")
+    save(fname, svg=True)
+
+
+### ============================================================
+### CARICAMENTO E QUALITÀ DEI DATI
+### ============================================================
+df = pd.read_csv(DATA_FILE)
+assert df[TARGET].isin(["Yes", "No"]).all(), "Il target contiene valori diversi da Yes/No."
+
+log_table("ANALISI DATI MANCANTI", df.isna().sum().to_frame("Valori mancanti"), index=True)
+log_table("ANALISI STATISTICA COLONNE NUMERICHE", df.describe(), index=True)
+log_table("RELATIONSHIP STATUS VS MARITAL STATUS",
+          pd.crosstab(df["Relationship_status"], df["Marital_status"]), index=True)
+
+categorical_columns = [c for c in df.select_dtypes(include=["object", "category", "string"]).columns
+                       if c != TARGET]
+df["dep"] = (df[TARGET] == "Yes").astype(int)  # target numerico per tassi e modelli
+OVERALL = df["dep"].mean() * 100
+
+
+### ============================================================
+### ANALISI ESPLORATIVA: GRAFICI
+### ============================================================
+# Distribuzione età per genere (conteggi a sinistra, densità a destra)
+fig, ax1 = plt.subplots(figsize=(10, 6))
+hist_kw = dict(data=df, x="Age", hue="Gender", discrete=True, multiple="dodge", shrink=0.85)
+sns.histplot(**hist_kw, stat="count", ax=ax1)
+ax2 = ax1.twinx()
+sns.histplot(**hist_kw, stat="density", alpha=1, ax=ax2)
+ax2.grid(False)
+ax1.set(title="Age Distribution by Gender", xlabel="Age", ylabel="Number of Students")
+ax2.set_ylabel("Density")
+save("plot_AgeDistribution_Gender")
+
+# Stato di depressione complessivo
+fig, ax = plt.subplots(figsize=(7, 6))
+sns.countplot(data=df, x=TARGET, ax=ax)
+ax.bar_label(ax.containers[0],
+             labels=[f"{int(b.get_height())}\n({b.get_height() / len(df) * 100:.1f}%)" for b in ax.containers[0]],
+             padding=3)
+ax.set_title("Reported Depression Status Among Students", fontsize=14, pad=12)
+ax.set(xlabel="Depression Status", ylabel="Number of Students", ylim=(0, ax.get_ylim()[1] * 1.15))
+save("plot_DepressionStatus")
+
+
+def plot_depression_comparison(name):
+    title = name.replace("_", " ").title()
+    counts = pd.crosstab(df[name], df[TARGET]).reindex(columns=["No", "Yes"], fill_value=0)
+    counts = counts.loc[counts.sum(axis=1).sort_values(ascending=False).index]
+    pct = counts.div(counts.sum(axis=1), axis=0).mul(100)
+    ax = counts.plot(kind="bar", stacked=True, figsize=(max(8, len(counts) * 1.2), 6),
+                     color=["tab:blue", "tab:orange"])
+    for cont, c in zip(ax.containers, counts.columns):
+        ax.bar_label(cont, label_type="center", fontsize=12,
+                     labels=[f"{n}\n({p:.1f}%)" if n > 0 else "" for n, p in zip(counts[c], pct[c])])
     ax.set(title=f"{title} and Depression", xlabel=title, ylabel="Number of Students")
     ax.tick_params(axis="x", rotation=0)
     ax.legend(title="Depression")
     ax.grid(axis="y", alpha=0.8)
-    plt.tight_layout()
-    plt.savefig(pathPlots + f"plot_{column}_vs_Depression.png", format="png", bbox_inches="tight")
-    plt.savefig(pathPlots + f"plot_{column}_vs_Depression.svg", format="svg", bbox_inches="tight")
-    plt.close()
+    save(f"plot_{name}_vs_Depression")
 
-plot_depression_comparison("Family_background")
-plot_depression_comparison("Relationship_status")
-plot_depression_comparison("Marital_status")
-plot_depression_comparison("Living_style")
-plot_depression_comparison("Health_condition")
-plot_depression_comparison("friend_circle")
 
-### STATISTICHE SULLA DEPRESSIONE IN BASE ALLE SOTTOCATEGORIE
-summary_list = []
-categorical_columns = [
-    col for col in df.select_dtypes(include=["object", "category", "string"]).columns
-    if col != "Depression"
-]
+for c in ["Family_background", "Relationship_status", "Marital_status",
+          "Living_style", "Health_condition", "friend_circle"]:
+    plot_depression_comparison(c)
 
-for col in categorical_columns:
-    summary = df.groupby(col, observed=True)["Depression"].apply(
-        lambda x: (x == "Yes").mean() * 100
-    ).reset_index(name="Depression_Rate")
-    summary["Variable"] = col
-    summary = summary.rename(columns={col: "Category"})
-    summary_list.append(summary)
 
-depression_rates = pd.concat(summary_list, ignore_index=True)
-depression_rates = depression_rates[["Variable", "Category", "Depression_Rate"]].sort_values("Depression_Rate", ascending=False)
-depression_rates["Depression_Rate"] = depression_rates["Depression_Rate"].round(2)
-logToFile('\n### STATISTICHE SULLA DEPRESSIONE IN BASE ALLE SOTTOCATEGORIE', pathDebug)
-logToFile(tabulate(depression_rates, headers="keys", tablefmt="rounded_grid", floatfmt=".2f"), pathDebug)
+### ============================================================
+### ASSOCIAZIONI CON LA DEPRESSIONE (VARIABILI CATEGORICHE)
+### ============================================================
+# Tasso di depressione per ogni sottocategoria
+rates = pd.concat([
+    (df.groupby(c)["dep"].mean() * 100).rename("Depression_Rate").rename_axis("Category")
+      .reset_index().assign(Variable=c)
+    for c in categorical_columns
+])[["Variable", "Category", "Depression_Rate"]].sort_values("Depression_Rate", ascending=False)
+log_table("STATISTICHE SULLA DEPRESSIONE IN BASE ALLE SOTTOCATEGORIE", rates)
 
-### TEST CHI QUADRO E V-CRAMER
-association_results = []
-for col in categorical_columns:
-    table = pd.crosstab(df[col], df["Depression"])
-    chi2, p, dof, _ = chi2_contingency(table)
-    n, r, k = table.to_numpy().sum(), *table.shape
-    v = np.sqrt(chi2 / (n * min(r - 1, k - 1))) if min(r - 1, k - 1) > 0 else np.nan
+# Chi-quadro e V di Cramér (correzione di Bonferroni sul numero di variabili)
+rows = []
+for c in categorical_columns:
+    chi2, p, dof, v = assoc(pd.crosstab(df[c], df[TARGET]))
+    strength = ("N/A" if np.isnan(v) else "Negligible" if v < 0.1 else
+                "Weak" if v < 0.3 else "Moderate" if v < 0.5 else "Strong")
+    rows.append({"Variable": c, "Chi-square": chi2, "DoF": dof, "P-value": p,
+                 "Cramer's V": v, "Strength": strength})
+t = pd.DataFrame(rows).sort_values("Cramer's V", ascending=False)
+t["P-value corrected"] = (t["P-value"] * len(categorical_columns)).clip(upper=1)
+log_table("ASSOCIAZIONE VARIABILI CATEGORICHE E DEPRESSIONE",
+          fmt_p_cols(t, ["P-value", "P-value corrected"]), floatfmt=".3f")
 
-    association_results.append({
-        "Variable": col, "Chi-square": round(chi2, 2),
-        "Degrees of Freedom": dof,
-        "P-value": "< 0.001" if p < 0.001 else f"{p:.3f}",
-        "Cramer's V": round(v, 3)
-    })
+# Condizione di salute
+health = pd.crosstab(df["Health_condition"], df[TARGET], margins=True)
+health["Tasso_depressione (%)"] = health["Yes"] / health["All"] * 100
+log_table("CONDIZIONE DI SALUTE VS DEPRESSIONE", health, index=True)
 
-logToFile('\n### TEST CHI QUADRO E V-CRAMER', pathDebug)
-logToFile(tabulate(pd.DataFrame(association_results), headers="keys", tablefmt="rounded_grid", floatfmt=".3f"), pathDebug)
-
-### CONDIZIONE DI SALUTE VS DEPRESSIONE
-health_table = pd.crosstab(df["Health_condition"], df["Depression"], margins=True)
-health_table["Tasso_depressione (%)"] = (health_table["Yes"] / health_table["All"] * 100).round(2)
-
-logToFile("\n### CONDIZIONE DI SALUTE VS DEPRESSIONE", pathDebug)
-logToFile(tabulate(health_table, headers="keys", tablefmt="rounded_grid"), pathDebug)
-
-### STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE
-rate = pd.crosstab(
-    df["Relationship_status"], df["friend_circle"],
-    values=(df["Depression"] == "Yes"), aggfunc="mean"
-).mul(100)
+# Stato di relazione x cerchia di amici (heatmap)
+rate = rate_ct("Relationship_status", "friend_circle")
 n = pd.crosstab(df["Relationship_status"], df["friend_circle"])
-labels = rate.round(1).astype(str) + "%\n(n=" + n.astype(str) + ")"
-
 fig, ax = plt.subplots(figsize=(8, 6))
-sns.heatmap(rate, annot=labels, fmt="", cmap="Oranges", cbar_kws={"label": "Tasso di depressione (%)"}, ax=ax)
-ax.set_title("Depression by Relationship Status and Friend Circle")
-ax.set_xlabel("Friend Circle")
-ax.set_ylabel("Relationship Status")
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_Relationship_FriendCircle.png", format="png", bbox_inches="tight")
-plt.savefig(pathPlots + "plot_Relationship_FriendCircle.svg", format="svg", bbox_inches="tight")
-plt.close()
+sns.heatmap(rate, annot=rate.round(1).astype(str) + "%\n(n=" + n.astype(str) + ")", fmt="",
+            cmap="Oranges", cbar_kws={"label": "Tasso di depressione (%)"}, ax=ax)
+ax.set(title="Depression by Relationship Status and Friend Circle",
+       xlabel="Friend Circle", ylabel="Relationship Status")
+save("plot_Relationship_FriendCircle")
 
-### STATO DI RELAZIONE E CERCHIA DI AMICI STATISTICA
-friend_results = []
-relationship_groups = df["Relationship_status"].dropna().unique()
+# Effetto della cerchia di amici dentro ogni stato di relazione
+groups = df["Relationship_status"].dropna().unique()
+rows = []
+for g in groups:
+    s = df[df["Relationship_status"] == g]
+    r_yes = s.loc[s["friend_circle"] == "Yes", "dep"].mean() * 100
+    r_no = s.loc[s["friend_circle"] == "No", "dep"].mean() * 100
+    tab = pd.crosstab(s["friend_circle"], s[TARGET])
+    p = chi2_contingency(tab)[1] if min(tab.shape) > 1 else np.nan
+    rows.append({"Relationship_status": g, "Students": len(s), "Rate (friends)": r_yes,
+                 "Rate (no friends)": r_no, "Difference": r_no - r_yes, "P-value": p,
+                 "P-value (corrected)": np.minimum(p * len(groups), 1)})
+t = pd.DataFrame(rows).sort_values("Students", ascending=False)
+log_table("STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE",
+          fmt_p_cols(t, ["P-value", "P-value (corrected)"]), floatfmt=".1f")
 
-for group in relationship_groups:
-    subset = df[df["Relationship_status"] == group]
-    rate_yes = (subset.loc[subset["friend_circle"] == "Yes", "Depression"] == "Yes").mean() * 100
-    rate_no = (subset.loc[subset["friend_circle"] == "No", "Depression"] == "Yes").mean() * 100
-    table = pd.crosstab(subset["friend_circle"], subset["Depression"])
-    p = chi2_contingency(table)[1] if table.shape[0] > 1 and table.shape[1] > 1 else np.nan
+# Genere x stato di relazione
+log_table("TASSO DI DEPRESSIONE GENERE VS REL STATUS (%)", rate_ct("Relationship_status", "Gender").round(1), index=True)
+log_table("N STUDENTI GENERE VS REL STATUS", pd.crosstab(df["Relationship_status"], df["Gender"]), index=True)
 
-    friend_results.append({
-        "Relationship_status": group, "Students": len(subset),
-        "Rate (friends)": round(rate_yes, 1), "Rate (no friends)": round(rate_no, 1),
-        "Difference": round(rate_no - rate_yes, 1), "P-value": p,
-        "P-value (corrected)": min(p * len(relationship_groups), 1) if pd.notna(p) else np.nan
-    })
-
-friend_table = pd.DataFrame(friend_results).sort_values("Students", ascending=False)
-for col in ["P-value", "P-value (corrected)"]:
-    friend_table[col] = friend_table[col].map(lambda p: "< 0.001" if p < 0.001 else f"{p:.3f}" if pd.notna(p) else "N/A")
-
-logToFile("\n### STATO DI RELAZIONE E CERCHIA DI AMICI VS DEPRESSIONE", pathDebug)
-logToFile(tabulate(friend_table, headers="keys", tablefmt="rounded_grid", showindex=False), pathDebug)
-
-### COSTI EXTRA-STUDIO E DEPRESSIONE
-df["Cost_quintile"] = pd.qcut(df["Cost_without_study"], q=5, labels=["Q1 (più basso)", "Q2", "Q3", "Q4", "Q5 (più alto)"])
-cost_rates = df.groupby("Cost_quintile", observed=True)["Depression"].agg(
-    Students="size", Rate=lambda x: (x == "Yes").mean() * 100
-).reset_index()
-
-cost_table = cost_rates.copy()
-cost_table["Rate (%)"] = cost_table["Rate"].round(2)
-cost_table = cost_table.drop(columns="Rate")
-
-logToFile("\n### COSTI EXTRA-STUDIO E DEPRESSIONE", pathDebug)
-logToFile(tabulate(cost_table, headers="keys", tablefmt="rounded_grid", showindex=False), pathDebug)
-
-fig, ax = plt.subplots(figsize=(9, 5))
-sns.barplot(data=cost_rates, x="Cost_quintile", y="Rate", color="tab:orange", ax=ax)
-overall_rate = (df["Depression"] == "Yes").mean() * 100
-ax.axhline(overall_rate, color="gray", linestyle="--", label=f"Tasso complessivo ({overall_rate:.1f}%)")
-ax.bar_label(ax.containers[0], fmt="%.1f%%", padding=3)
-ax.set_title("Tasso di depressione per gruppo di costo extra-studio")
-ax.set_xlabel("Costo extra-studio (quintili)")
-ax.set_ylabel("Percentuale di studenti con depressione")
-ax.legend()
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_extra_studio_vs_depressione.png", bbox_inches="tight")
-plt.savefig(pathPlots + "plot_extra_studio_vs_depressione.svg", bbox_inches="tight")
-plt.close()
-
-### HEATMAP V DI CRAMÉR
-cat_cols_all = categorical_columns + ["Depression"]
-cramers_matrix = pd.DataFrame(index=cat_cols_all, columns=cat_cols_all, dtype=float)
-
-for a in cat_cols_all:
-    for b in cat_cols_all:
-        table = pd.crosstab(df[a], df[b])
-        chi2 = chi2_contingency(table)[0]
-        n = table.to_numpy().sum()
-        denom = n * (min(table.shape) - 1)
-        cramers_matrix.loc[a, b] = np.sqrt(chi2 / denom) if denom > 0 else np.nan
-
+# Heatmap V di Cramér tra tutte le variabili categoriche
+heat_cols = categorical_columns + [TARGET]
+cramers = pd.DataFrame([[assoc(pd.crosstab(df[a], df[b]))[3] for b in heat_cols] for a in heat_cols],
+                       index=heat_cols, columns=heat_cols)
 fig, ax = plt.subplots(figsize=(10, 8))
-sns.heatmap(cramers_matrix, annot=True, fmt=".2f", cmap="Blues", vmin=0, vmax=1, ax=ax)
+sns.heatmap(cramers, annot=True, fmt=".2f", cmap="Blues", vmin=0, vmax=1, ax=ax)
 ax.set_title("V di Cramér tra le variabili categoriche")
 ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_vCramer.png", bbox_inches="tight")
-plt.savefig(pathPlots + "plot_vCramer.svg", bbox_inches="tight")
-plt.close()
+save("plot_vCramer")
 
-### CORRELAZIONE DI SPEARMAN
-numeric_columns = ["Age", "Current_semester", "CGPA", "Cost_without_study"]
-numeric_corr = df[numeric_columns].corr(method="spearman").round(2)
 
+### ============================================================
+### QUINTILI DI COSTO EXTRA-STUDIO E DI CGPA
+### ============================================================
+def quintile_analysis(col, qcol, prefix, label, fname):
+    """Tasso di depressione per quintili: tabella, grafico, test uno-contro-resto e test complessivo."""
+    labels = [f"{prefix}1 (più basso)", f"{prefix}2", f"{prefix}3", f"{prefix}4", f"{prefix}5 (più alto)"]
+    df[qcol] = pd.qcut(df[col], q=5, labels=labels)
+
+    res = (df.groupby(qcol, observed=True)
+             .agg(Min=(col, "min"), Max=(col, "max"), Students=("dep", "size"),
+                  Rate=("dep", lambda x: x.mean() * 100))
+             .reset_index())
+    log_table(f"TASSO DI DEPRESSIONE PER QUINTILI: {label.upper()}", res)
+
+    plt.figure(figsize=(9, 5))
+    ax = sns.barplot(data=res, x=qcol, y="Rate", color="tab:orange")
+    ax.axhline(OVERALL, color="gray", linestyle="--", label=f"Tasso complessivo ({OVERALL:.1f}%)")
+    ax.bar_label(ax.containers[0], fmt="%.1f%%", padding=3)
+    ax.set(title=f"Tasso di depressione per quintili: {label}", xlabel=f"{label} (quintili)",
+           ylabel="Percentuale di studenti con depressione")
+    ax.legend()
+    save(fname)
+
+    rows = []
+    for q in labels:
+        m = df[qcol] == q
+        p = chi2_contingency(pd.crosstab(m, df[TARGET]))[1]
+        rows.append({"Quintile": q, "Rate (%)": df.loc[m, "dep"].mean() * 100,
+                     "Rate others (%)": df.loc[~m, "dep"].mean() * 100,
+                     "P-value": p, "P-value corr.": min(p * 5, 1)})
+    log_table(f"TEST QUINTILI VS RESTO: {label.upper()}",
+              fmt_p_cols(pd.DataFrame(rows), ["P-value", "P-value corr."]), floatfmt=".1f")
+    chi2, p, dof, v = assoc(pd.crosstab(df[qcol], df[TARGET]))
+    log(f"Test complessivo {label}: chi2={chi2:.2f}, dof={dof}, p-value={fmt_p(p)}, V di Cramér={v:.3f}")
+
+
+quintile_analysis("Cost_without_study", "Cost_quintile", "Q", "Costo extra-studio", "plot_extra_studio_vs_depressione")
+quintile_analysis("CGPA", "CGPA_quintile", "C", "CGPA", "plot_cgpa_quintili_depressione")
+
+# Costo extra-studio x classe sociale ("!" = meno di 20 studenti)
+counts = pd.crosstab(df["Cost_quintile"], df["Family_background"])
+cls_rates = rate_ct("Cost_quintile", "Family_background").round(1).astype(str) + "%"
+cls_rates = cls_rates.mask(counts < 20, cls_rates + "!")
+log_table("TASSO DI DEPRESSIONE (%) PER COSTO E CLASSE SOCIALE", cls_rates, index=True, stralign="right")
+log_table("N STUDENTI PER COSTO E CLASSE SOCIALE", counts, index=True)
+
+middle = df[df["Family_background"] == "Middle class"]
+chi2, p, dof, v = assoc(pd.crosstab(middle["Cost_quintile"], middle[TARGET]))
+log(f"\n### CLASSE MEDIA: chi2={chi2:.2f}, dof={dof}, p-value={p:.5f}, V di Cramér={v:.3f}")
+
+rich = df[df["Family_background"] == "Rich class"]
+q5 = rich["Cost_quintile"] == "Q5 (più alto)"
+log(f"### CLASSE RICCA: Q5={rich.loc[q5, 'dep'].mean() * 100:.1f}% (n={q5.sum()}), "
+    f"Q1-Q4={rich.loc[~q5, 'dep'].mean() * 100:.1f}% (n={(~q5).sum()})")
+
+
+### ============================================================
+### ASSOCIAZIONI CON LA DEPRESSIONE (VARIABILI NUMERICHE)
+### ============================================================
+rows = []
+for c in NUM:
+    no, yes = df.loc[df[TARGET] == "No", c].dropna(), df.loc[df[TARGET] == "Yes", c].dropna()
+    u, p = mannwhitneyu(no, yes, alternative="two-sided")
+    rows.append({"Variable": c, "Median (No)": no.median(), "Median (Yes)": yes.median(),
+                 "U Statistic": u, "P-value": p, "Effect size (A)": u / (len(no) * len(yes))})
+t = pd.DataFrame(rows)
+t["P-value corrected"] = (t["P-value"] * len(NUM)).clip(upper=1)
+log_table("ASSOCIAZIONE VARIABILI NUMERICHE CON DEPRESSIONE", fmt_p_cols(t, ["P-value", "P-value corrected"]))
+
+corr = df[NUM].corr(method="spearman").round(2)
+log_table("CORRELAZIONE DI SPEARMAN", corr, index=True)
 fig, ax = plt.subplots(figsize=(9, 7))
-sns.heatmap(numeric_corr, annot=True, fmt=".2f", cmap="coolwarm", vmin=-1, vmax=1, square=True, linewidths=0.8, ax=ax)
+sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", vmin=-1, vmax=1, square=True,
+            linewidths=0.8, annot_kws={"size": 12}, ax=ax)
 ax.set_title("Correlazione di Spearman tra le variabili numeriche", pad=20)
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_correlazione_spearman.png", bbox_inches="tight")
-plt.savefig(pathPlots + "plot_correlazione_spearman.svg", bbox_inches="tight")
-plt.close()
+ax.tick_params(axis="x", rotation=30, labelsize=11)
+ax.tick_params(axis="y", rotation=0, labelsize=11)
+save("plot_correlazione_spearman")
 
 
-# ==============================================================================
-# PREPARAZIONE UNIFICATA DATASET DI MODELLAZIONE E SPLIT UNICO TRAIN / TEST
-# ==============================================================================
-
-TARGET = "Depression"
-num_cols = ["Age", "Current_semester", "CGPA", "Cost_without_study"]
-cat_cols = [
-    "Gender", "Family_background", "Relationship_status",
-    "Marital_status", "Living_style", "friend_circle", "Home_division"
-]
-
-# Modello Dataset Unificato
-df_model = df.copy()
-cols_to_drop = [col for col in df_model.columns if col.startswith("cluster")]
-df_model = df_model.drop(columns=cols_to_drop, errors="ignore")
-
-needed_cols = [TARGET] + num_cols + cat_cols
-df_model = df_model[needed_cols].dropna(subset=needed_cols).copy()
-
-# Mapping Target (1=Yes, 0=No)
-df_model[TARGET] = (
-    df_model[TARGET]
-    .astype(str)
-    .str.strip()
-    .str.lower()
-    .map({"yes": 1, "no": 0})
-    .astype(int)
-)
-
-# Feature engineering per CatBoost e utilità generale
-df_model["male"] = (df_model["Gender"] == "Male").astype(int)
-df_model["no_friends"] = (df_model["friend_circle"] == "No").astype(int)
-
-# SPLIT TRAIN / TEST UNICO PER TUTTI I MODELLI
-train_df, test_df = train_test_split(
-    df_model, test_size=0.20, random_state=random_seed, stratify=df_model[TARGET]
-)
-
-logToFile("\n" + "="*80, pathDebug)
-logToFile("PREPARAZIONE UNIFICATA DATASET DI MODELLAZIONE", pathDebug)
-logToFile("="*80, pathDebug)
-logToFile(f"Dimensioni dataset unificato: {df_model.shape}", pathDebug)
-logToFile(f"Train shape: {train_df.shape} | Test shape: {test_df.shape}", pathDebug)
-logToFile(f"Distribuzione Target Train (%):\n{train_df[TARGET].value_counts(normalize=True).round(3)}", pathDebug)
-logToFile(f"Distribuzione Target Test (%):\n{test_df[TARGET].value_counts(normalize=True).round(3)}", pathDebug)
-
-# Formati Unificati per Feature e Target
-X_train_raw = train_df[num_cols + cat_cols]
-X_test_raw = test_df[num_cols + cat_cols]
-y_train = train_df[TARGET]
-y_test = test_df[TARGET]
-
-# One-Hot Encoding per Decision Tree e Logistic Regression
-X_train_encoded = pd.get_dummies(X_train_raw, columns=cat_cols, drop_first=True, dtype=float)
-X_test_encoded = pd.get_dummies(X_test_raw, columns=cat_cols, drop_first=True, dtype=float).reindex(columns=X_train_encoded.columns, fill_value=0)
+### ============================================================
+### PROFILI DI STUDENTI (IC di Wilson, almeno 20 studenti)
+### ============================================================
+prof = (df.groupby(["Relationship_status", "friend_circle", "Family_background", "Living_style"], observed=True)
+          .agg(Total_Students=("dep", "size"), Depression_Count=("dep", "sum")).reset_index())
+log(f"\n### ANALISI PROFILI STUDENTI\nProfili totali: {len(prof)}")
+prof = prof[prof["Total_Students"] >= 20].copy()
+log(f"Profili con almeno 20 studenti: {len(prof)}")
+prof["Depression_Rate"] = prof["Depression_Count"] / prof["Total_Students"] * 100
+lo, hi = proportion_confint(prof["Depression_Count"], prof["Total_Students"], method="wilson")
+prof["CI_low"], prof["CI_high"] = lo * 100, hi * 100
+log_table("TOP 10 PROFILI PER TASSO DI DEPRESSIONE", prof.sort_values("Depression_Rate", ascending=False).head(10))
 
 
-# ==============================================================================
-# MODELLO 1: DECISION TREE
-# ==============================================================================
+### ============================================================
+### MODELLO 1: DECISION TREE
+### ============================================================
+tree_cols = NUM + [c for c in categorical_columns if c not in ["Marital_status", "Health_condition"]]
+tree_cat = [c for c in tree_cols if c not in NUM]
+X_tr, X_te, y_tr, y_te = split(tree_cols, "DECISION TREE")
 
-logToFile("\n" + "="*80, pathDebug)
-logToFile("SEZIONE 1: DECISION TREE", pathDebug)
-logToFile("="*80, pathDebug)
+X_tr_enc = pd.get_dummies(X_tr, columns=tree_cat, drop_first=True, dtype=float)
+X_te_enc = (pd.get_dummies(X_te, columns=tree_cat, drop_first=True, dtype=float)
+            .reindex(columns=X_tr_enc.columns, fill_value=0))
+log(f"\n### ENCODING FEATURE CATEGORICHE\nTrain: {X_tr_enc.shape} | Test: {X_te_enc.shape}\n{X_tr_enc.columns.tolist()}")
 
-grid_params_path = "data/gridSearch.par"
-run_gridsearch = True
+baseline = DecisionTreeClassifier(max_depth=3, min_samples_leaf=20, class_weight="balanced",
+                                  random_state=SEED).fit(X_tr_enc, y_tr)
+evaluate("Baseline Tree", y_te, baseline.predict_proba(X_te_enc)[:, 1], store=False)
 
-if os.path.exists(grid_params_path):
-    scelta = input(f"\nTrovato il file '{grid_params_path}'. Vuoi utilizzare i parametri salvati per Decision Tree? [s/n]: ").strip().lower()
-    if scelta in ["s", "si", "y", "yes", ""]:
-        run_gridsearch = False
-        best_params_dt = joblib.load(grid_params_path)
-        best_tree = DecisionTreeClassifier(
-            **best_params_dt, class_weight="balanced", random_state=random_seed
-        ).fit(X_train_encoded, y_train)
-        logToFile(f"Caricamento iperparametri DT da '{grid_params_path}': {best_params_dt}", pathDebug)
 
-if run_gridsearch:
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_seed)
-    param_grid = {
-        "criterion": ["gini", "entropy"],
-        "max_depth": [2, 3, 4, 5, 6, 8, 10, None],
-        "min_samples_split": [2, 5, 10, 20],
-        "min_samples_leaf": [1, 5, 10, 20, 30],
-        "ccp_alpha": [0.0, 0.001, 0.005, 0.01, 0.02]
-    }
+def search_tree():
+    grid = {"criterion": ["gini", "entropy"], "max_depth": [2, 3, 4, 5, 6, 8, 10, None],
+            "min_samples_split": [2, 5, 10, 20], "min_samples_leaf": [1, 5, 10, 20, 30],
+            "ccp_alpha": [0.0, 0.001, 0.005, 0.01, 0.02]}
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+    gs = GridSearchCV(DecisionTreeClassifier(class_weight="balanced", random_state=SEED),
+                      grid, scoring="accuracy", cv=cv, n_jobs=-1)
+    with tqdm_joblib(total=int(np.prod([len(v) for v in grid.values()])) * cv.n_splits, desc="GridSearch Tree"):
+        gs.fit(X_tr_enc, y_tr)
+    log(f"Miglior CV score (Accuracy): {gs.best_score_:.3f}")
+    return gs.best_params_
 
-    total_fits = np.prod([len(v) for v in param_grid.values()]) * cv.n_splits
-    grid_search = GridSearchCV(
-        DecisionTreeClassifier(class_weight="balanced", random_state=random_seed),
-        param_grid, scoring="accuracy", cv=cv, n_jobs=-1
+
+tree_params = load_or_search(PAR_DIR + "gridSearch.par", search_tree)
+best_tree = DecisionTreeClassifier(**tree_params, class_weight="balanced", random_state=SEED).fit(X_tr_enc, y_tr)
+evaluate("Decision Tree", y_te, best_tree.predict_proba(X_te_enc)[:, 1], 0.5, tree_params)
+
+plt.figure(figsize=(20, 10))
+plot_tree(best_tree, feature_names=X_tr_enc.columns, class_names=["No Depression", "Depression"],
+          filled=True, rounded=True, max_depth=3, fontsize=9)
+plt.title("Albero di classificazione — primi 3 livelli")
+save("plot_decision_tree", svg=True)
+
+plot_importance("Decision Tree", X_tr_enc.columns, best_tree.feature_importances_, "Greens_r", "plot_feature_importance")
+
+
+### ============================================================
+### MODELLO 2: RANDOM FOREST (soglia di decisione + analisi OOB)
+### ============================================================
+RF_CAT = ["Gender", "Family_background", "Relationship_status", "Marital_status",
+          "Living_style", "friend_circle", "Home_division"]
+X_tr, X_te, y_tr, y_te = split(NUM + RF_CAT, "RANDOM FOREST")
+
+prep = ColumnTransformer([
+    ("num", StandardScaler(), NUM),
+    ("cat", OneHotEncoder(handle_unknown="ignore", drop="first", sparse_output=False), RF_CAT),
+])
+rf_pipe = Pipeline([
+    ("preprocessor", prep),
+    ("classifier", RandomForestClassifier(n_estimators=300, random_state=SEED, n_jobs=-1, class_weight="balanced")),
+])
+
+
+def search_rf():
+    dist = {"classifier__max_depth": [4, 6, 8, 10, 15, None],
+            "classifier__min_samples_split": randint(2, 21),
+            "classifier__min_samples_leaf": randint(1, 21),
+            "classifier__max_features": ["sqrt", "log2", 0.3, 0.5, 0.7],
+            "classifier__class_weight": ["balanced", "balanced_subsample"]}
+    cv, n_iter = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED), 60
+    rs = RandomizedSearchCV(rf_pipe, dist, n_iter=n_iter, scoring="f1", cv=cv, n_jobs=-1,
+                            random_state=SEED, return_train_score=True)
+    with tqdm_joblib(total=n_iter * cv.n_splits, desc="RandomSearch RF"):
+        rs.fit(X_tr, y_tr)
+    log(f"Miglior F1 score in CV: {rs.best_score_:.3f}")
+    top = (pd.DataFrame(rs.cv_results_).sort_values("rank_test_score").head(10)
+           [["rank_test_score", "mean_test_score", "std_test_score", "mean_train_score", "params"]])
+    log_table("TOP 10 COMBINAZIONI CV RANDOM FOREST", top, floatfmt=".4f")
+    return rs.best_params_
+
+
+rf_params = {k.replace("classifier__", ""): v
+             for k, v in load_or_search(PAR_DIR + "randomSearchRandomForest.par", search_rf).items()}
+
+# Curva OOB al crescere del numero di alberi
+X_tr_t = prep.fit_transform(X_tr)
+oob_rf = RandomForestClassifier(**rf_params, n_estimators=50, oob_score=True, warm_start=True,
+                                random_state=SEED, n_jobs=-1)
+rows = []
+for n_est in range(50, 601, 25):
+    oob_rf.set_params(n_estimators=n_est).fit(X_tr_t, y_tr)
+    rows.append({"n_estimators": n_est, "OOB_error": 1 - oob_rf.oob_score_,
+                 "OOB_ROC_AUC": roc_auc_score(y_tr, oob_rf.oob_decision_function_[:, 1])})
+oob = pd.DataFrame(rows)
+best_row = oob.loc[oob["OOB_ROC_AUC"].idxmax()]
+best_n = int(best_row["n_estimators"])
+log(f"\n### ANALISI OOB PER NUMERO DI ALBERI\nAlberi con OOB ROC-AUC massimo: {best_n} | "
+    f"OOB ROC-AUC: {best_row['OOB_ROC_AUC']:.4f} | OOB error: {best_row['OOB_error']:.4f}")
+
+fig, ax1 = plt.subplots(figsize=(10, 5))
+ax1.plot(oob["n_estimators"], oob["OOB_error"], marker="o", color="tab:red")
+ax1.set_xlabel("Numero di alberi")
+ax1.set_ylabel("OOB error", color="tab:red")
+ax2 = ax1.twinx()
+ax2.plot(oob["n_estimators"], oob["OOB_ROC_AUC"], marker="o", color="tab:green")
+ax2.set_ylabel("OOB ROC-AUC", color="tab:green")
+ax2.grid(False)
+ax1.axvline(best_n, color="black", linestyle="--", label=f"Scelta: {best_n} alberi")
+ax1.legend()
+fig.suptitle("Andamento OOB in funzione del numero di alberi")
+save("plot_rf_oob_curve", svg=True)
+
+# Modello finale
+final_n = max(best_n, 300)
+rf_pipe.set_params(classifier=RandomForestClassifier(**rf_params, n_estimators=final_n, oob_score=True,
+                                                     random_state=SEED, n_jobs=-1))
+rf_pipe.fit(X_tr, y_tr)
+rf = rf_pipe.named_steps["classifier"]
+log(f"\n### VALUTAZIONE OOB MODELLO FINALE RF\nAlberi: {final_n} | OOB accuracy: {rf.oob_score_:.4f} | "
+    f"OOB error: {1 - rf.oob_score_:.4f} | OOB ROC-AUC: {roc_auc_score(y_tr, rf.oob_decision_function_[:, 1]):.4f}")
+
+prob = rf_pipe.predict_proba(X_te)[:, 1]
+evaluate("Random Forest (soglia 0.50)", y_te, prob, 0.5, store=False)
+
+# Soglia che massimizza l'F1 (calcolata sul test set)
+p_, r_, th_ = precision_recall_curve(y_te, prob)
+thr_tab = pd.DataFrame({"threshold": th_, "precision": p_[:-1], "recall": r_[:-1]})
+thr_tab["f1"] = 2 * thr_tab["precision"] * thr_tab["recall"] / (thr_tab["precision"] + thr_tab["recall"] + 1e-12)
+best_idx = thr_tab["f1"].idxmax()
+rf_thr = float(thr_tab.loc[best_idx, "threshold"])
+log_table("OTTIMIZZAZIONE SOGLIA DI DECISIONE RF", thr_tab.loc[[best_idx]], floatfmt=".4f")
+
+plt.figure(figsize=(10, 5))
+for c, color, lw in [("precision", "tab:blue", 1.5), ("recall", "tab:orange", 1.5), ("f1", "tab:green", 2)]:
+    plt.plot(thr_tab["threshold"], thr_tab[c], label=c.capitalize(), color=color, linewidth=lw)
+plt.axvline(rf_thr, color="black", linestyle="--", label=f"Soglia ottimale = {rf_thr:.3f}")
+plt.xlabel("Soglia di probabilità")
+plt.ylabel("Metrica")
+plt.ylim(0, 1.05)
+plt.title("Precision, Recall e F1 in funzione della soglia")
+plt.legend()
+save("plot_rf_threshold_tuning", svg=True)
+
+evaluate("Random Forest", y_te, prob, rf_thr, rf_params)
+plot_importance("Random Forest", prep.get_feature_names_out(), rf.feature_importances_, "Blues_r", "plot_rf_feature_importance")
+
+
+### ============================================================
+### MODELLO 3: CATBOOST
+### ============================================================
+df["male"] = (df["Gender"] == "Male").astype(int)
+df["no_friends"] = (df["friend_circle"] == "No").astype(int)
+
+CB_CAT = ["Relationship_status", "Family_background", "Home_division", "Living_style"]
+CB_NUM = ["CGPA", "Cost_without_study", "Age", "Current_semester"]
+X_tr, X_te, y_tr, y_te = split(["male", "no_friends"] + CB_CAT + CB_NUM, "CATBOOST")
+
+
+def new_cb(depth, l2_leaf_reg, learning_rate=0.03, iterations=300):
+    return CatBoostClassifier(
+        iterations=iterations, depth=depth, learning_rate=learning_rate, l2_leaf_reg=l2_leaf_reg,
+        one_hot_max_size=10, cat_features=tuple(CB_CAT), auto_class_weights="Balanced",
+        random_seed=SEED, verbose=0, allow_writing_files=False,
     )
 
-    with tqdm_joblib(total=total_fits, desc="GridSearch Tree"):
-        grid_search.fit(X_train_encoded, y_train)
 
-    best_params_dt = grid_search.best_params_
-    joblib.dump(best_params_dt, grid_params_path)
-    best_tree = grid_search.best_estimator_
-    logToFile(f"Migliori iperparametri DT: {best_params_dt}", pathDebug)
-
-y_pred_dt = best_tree.predict(X_test_encoded)
-y_prob_dt = best_tree.predict_proba(X_test_encoded)[:, 1]
-
-logToFile("\n### DECISION TREE - VALUTAZIONE TEST SET", pathDebug)
-logToFile(f"Acc: {accuracy_score(y_test, y_pred_dt):.3f} | Prec: {precision_score(y_test, y_pred_dt):.3f} | Rec: {recall_score(y_test, y_pred_dt):.3f} | F1: {f1_score(y_test, y_pred_dt):.3f} | ROC-AUC: {roc_auc_score(y_test, y_prob_dt):.3f}", pathDebug)
-
-# Plot ROC & Tree
-fig, ax = plt.subplots(figsize=(7, 5))
-RocCurveDisplay.from_predictions(y_test, y_prob_dt, name="Decision Tree", ax=ax)
-ax.set_title("ROC Curve — Decision Tree")
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_dt_roc_curve.png")
-plt.savefig(pathPlots + "plot_dt_roc_curve.svg")
-plt.close()
-
-plt.figure(figsize=(18, 9))
-plot_tree(best_tree, feature_names=X_train_encoded.columns, class_names=["No", "Yes"], filled=True, max_depth=3, fontsize=9)
-plt.title("Albero di Decisione — Primi 3 livelli")
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_decision_tree.png")
-plt.savefig(pathPlots + "plot_decision_tree.svg")
-plt.close()
+def search_cb():
+    cv_rep = RepeatedStratifiedKFold(n_splits=5, n_repeats=3, random_state=SEED)
+    rows = []
+    for depth, l2 in product([4, 6, 8], [10, 30, 50]):
+        m = new_cb(depth, l2)
+        scores = cross_val_score(m, X_tr, y_tr, cv=cv_rep, scoring="roc_auc")
+        m.fit(X_tr, y_tr)
+        auc_train = roc_auc_score(y_tr, m.predict_proba(X_tr)[:, 1])
+        rows.append([depth, l2, scores.mean(), scores.std(), auc_train, auc_train - scores.mean()])
+    grid = (pd.DataFrame(rows, columns=["depth", "l2_leaf_reg", "AUC cv", "std cv", "AUC train", "scarto train-cv"])
+            .sort_values("AUC cv", ascending=False).reset_index(drop=True))
+    log_table("RISULTATI GRID SEARCH CATBOOST", grid, floatfmt=".4f")
+    return {"depth": int(grid.loc[0, "depth"]), "l2_leaf_reg": float(grid.loc[0, "l2_leaf_reg"]),
+            "learning_rate": 0.03}
 
 
-# ==============================================================================
-# MODELLO 2: REGRESSIONE LOGISTICA CON SELEZIONE DELLE VARIABILI (FORWARD/BACKWARD)
-# ==============================================================================
+cb_params = load_or_search(PAR_DIR + "catboost.par", search_cb)
+model = new_cb(**cb_params).fit(X_tr, y_tr)
+plot_importance("CatBoost", X_tr.columns, model.get_feature_importance(), "Oranges_r", "plot_catboost_feature_importance")
 
-logToFile("\n" + "="*80, pathDebug)
-logToFile("SEZIONE 2: REGRESSIONE LOGISTICA (FORWARD/BACKWARD SELECTION)", pathDebug)
-logToFile("="*80, pathDebug)
+# Quanti alberi servono? (AUC train vs cross-validation)
+N_MAX = 1000
+steps = list(range(25, N_MAX + 1, 25))
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+curve_val, curve_tr = [], []
+for i_tr, i_va in cv.split(X_tr, y_tr):
+    m = new_cb(**cb_params, iterations=N_MAX).fit(X_tr.iloc[i_tr], y_tr.iloc[i_tr])
+    for store_, idx in ((curve_tr, i_tr), (curve_val, i_va)):
+        store_.append([roc_auc_score(y_tr.iloc[idx], m.predict_proba(X_tr.iloc[idx], ntree_end=k)[:, 1])
+                       for k in steps])
+curve = pd.DataFrame({"alberi": steps, "AUC cv": np.mean(curve_val, axis=0), "AUC train": np.mean(curve_tr, axis=0)})
 
-# Standardizzazione numeriche solo per Logit
+plt.figure(figsize=(7, 4.5))
+plt.plot(curve["alberi"], curve["AUC train"], label="train")
+plt.plot(curve["alberi"], curve["AUC cv"], label="cross-validation")
+plt.axvline(300, color="k", ls="--", label="300 alberi (usati)")
+plt.xlabel("numero di alberi")
+plt.ylabel("AUC")
+plt.title("Quanti alberi servono?")
+plt.legend()
+save("plot_catboost_curva_alberi", svg=True)
+log_table("OTTIMIZZAZIONE NUMERO ALBERI CATBOOST", curve.loc[[curve["AUC cv"].idxmax()]], floatfmt=".4f")
+
+# Soglia di decisione ottimale (F1 massimo) in cross-validation sul train
+p_cv = cross_val_predict(new_cb(**cb_params), X_tr, y_tr, cv=cv, method="predict_proba")[:, 1]
+rows = []
+for t_ in np.arange(0.05, 0.96, 0.01):
+    pred = (p_cv >= t_).astype(int)
+    rows.append([t_, recall_score(y_tr, pred), precision_score(y_tr, pred, zero_division=0),
+                 f1_score(y_tr, pred), pred.mean()])
+thr_cb = pd.DataFrame(rows, columns=["soglia", "recall", "precision", "f-score", "% segnalati"])
+log_table("ANALISI SOGLIE DI DECISIONE CATBOOST (CV)",
+          thr_cb[(thr_cb["soglia"] * 100).round().astype(int) % 5 == 0], floatfmt=".4f")
+cb_thr = round(float(thr_cb.loc[thr_cb["f-score"].idxmax(), "soglia"]), 2)
+log(f"\n### SOGLIA OTTIMALE CATBOOST: {cb_thr}")
+
+# Valutazione finale (train vs test)
+prob_tr, prob_te = model.predict_proba(X_tr)[:, 1], model.predict_proba(X_te)[:, 1]
+evaluate("CatBoost", y_te, prob_te, cb_thr, cb_params)
+
+metric_fns = {"accuracy": accuracy_score, "precision": precision_score, "recall": recall_score,
+              "f-score": f1_score, "phi-score": matthews_corrcoef}
+tr_te = pd.DataFrame({
+    name: {**{k: f(y, (p >= cb_thr).astype(int)) for k, f in metric_fns.items()}, "AUC": roc_auc_score(y, p)}
+    for name, (y, p) in {"train": (y_tr, prob_tr), "test": (y_te, prob_te)}.items()
+})
+log_table("METRICHE TRAIN VS TEST CATBOOST", tr_te, floatfmt=".4f", index=True)
+log(f"Accuracy 'rispondo sempre No' (baseline): {1 - y_te.mean():.3f}")
+
+
+### ============================================================
+### MODELLO 4: REGRESSIONE LOGISTICA (forward/backward con AIC/BIC)
+### ============================================================
+X_tr, X_te, y_tr, y_te = split(NUM + RF_CAT, "REGRESSIONE LOGISTICA")
+
+# Standardizzazione (fit solo sul train) + one-hot + intercetta
+X_tr, X_te = X_tr.copy(), X_te.copy()
 scaler = StandardScaler()
-X_train_logit = X_train_encoded.copy()
-X_test_logit = X_test_encoded.copy()
+X_tr[NUM] = scaler.fit_transform(X_tr[NUM])
+X_te[NUM] = scaler.transform(X_te[NUM])
+X_tr_lg = sm.add_constant(pd.get_dummies(X_tr, columns=RF_CAT, drop_first=True, dtype=float), has_constant="add")
+X_te_lg = sm.add_constant(pd.get_dummies(X_te, columns=RF_CAT, drop_first=True, dtype=float), has_constant="add")
+X_te_lg = X_te_lg.reindex(columns=X_tr_lg.columns, fill_value=0)
+log(f"\n### ENCODING REGRESSIONE LOGISTICA\nTrain: {X_tr_lg.shape} | Test: {X_te_lg.shape}\n{X_tr_lg.columns.tolist()}")
 
-X_train_logit[num_cols] = scaler.fit_transform(X_train_logit[num_cols])
-X_test_logit[num_cols] = scaler.transform(X_test_logit[num_cols])
-
-X_train_logit = sm.add_constant(X_train_logit, has_constant="add")
-X_test_logit = sm.add_constant(X_test_logit, has_constant="add")
 
 def fit_logit(X, y):
-    X = X.copy().loc[:, ~X.columns.duplicated()]
-    X = X.apply(pd.to_numeric, errors="coerce").astype(float).replace([np.inf, -np.inf], np.nan)
-    cols_to_keep = [col for col in X.columns if col == "const" or X[col].nunique(dropna=False) > 1]
-    X = X[cols_to_keep]
+    """Logit con fallback sui solver; scarta colonne costanti (tranne 'const'). None se non converge."""
+    X = X.loc[:, ~X.columns.duplicated()].apply(pd.to_numeric, errors="coerce").astype(float)
+    X = X.replace([np.inf, -np.inf], np.nan)
+    X = X[[c for c in X.columns if c == "const" or X[c].nunique(dropna=False) > 1]]
+    y = pd.to_numeric(y, errors="coerce")
     valid = X.notna().all(axis=1) & y.notna()
     X, y = X.loc[valid], y.loc[valid].astype(int)
-
     if y.nunique() < 2 or X.shape[1] == 0:
         return None
-
-    for method in ["newton", "lbfgs", "bfgs"]:
+    for solver in ["newton", "lbfgs", "bfgs"]:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                model = sm.Logit(y, X).fit(method=method, maxiter=500, disp=0)
-            if model.mle_retvals.get("converged", False):
-                return model
+                m = sm.Logit(y, X).fit(method=solver, maxiter=500, disp=0)
+            if m.mle_retvals.get("converged", False):
+                return m
         except Exception:
             continue
     return None
 
-def get_criterion(model, criterion_name):
-    if model is None: return np.inf
-    return float(getattr(model, criterion_name.lower()))
 
-def forward_selection(X_tr, y_tr, criterion_name="aic"):
-    predictors = [c for c in X_tr.columns if c != "const"]
-    selected, remaining = [], predictors.copy()
-    current_model = fit_logit(X_tr[["const"]], y_tr)
-    current_score = get_criterion(current_model, criterion_name)
-    best_model = current_model
+def criterion(model, crit):
+    """AIC o BIC del modello; infinito se non valido."""
+    return np.inf if model is None else float(getattr(model, crit))
 
-    while remaining:
-        trials = []
-        for candidate in remaining:
-            model = fit_logit(X_tr[["const"] + selected + [candidate]], y_tr)
-            trials.append((get_criterion(model, criterion_name), candidate, model))
-        trials.sort(key=lambda x: x[0])
-        best_score, best_candidate, best_m = trials[0]
 
-        if best_score < current_score - 1e-6:
-            selected.append(best_candidate)
-            remaining.remove(best_candidate)
-            current_score, best_model = best_score, best_m
-        else:
+def stepwise(direction, crit):
+    """Forward selection o backward elimination guidata da AIC/BIC -> lista di variabili."""
+    predictors = [c for c in X_tr_lg.columns if c != "const"]
+    selected = [] if direction == "forward" else predictors.copy()
+    remaining = predictors.copy() if direction == "forward" else []
+    fit = lambda cols: fit_logit(X_tr_lg[["const"] + cols], y_tr)
+    current = criterion(fit(selected), crit)
+    while (remaining if direction == "forward" else len(selected) > 1):
+        pool = remaining if direction == "forward" else selected
+        trials = [(criterion(fit(selected + [c] if direction == "forward" else [v for v in selected if v != c]), crit), c)
+                  for c in pool]
+        score, cand = min(trials)
+        if score >= current - 1e-6:
             break
-    return selected, best_model, current_score
-
-def backward_elimination(X_tr, y_tr, criterion_name="aic"):
-    selected = [c for c in X_tr.columns if c != "const"]
-    current_model = fit_logit(X_tr[["const"] + selected], y_tr)
-    current_score = get_criterion(current_model, criterion_name)
-    best_model = current_model
-
-    while len(selected) > 1:
-        trials = []
-        for candidate in selected:
-            trial_vars = [c for c in selected if c != candidate]
-            model = fit_logit(X_tr[["const"] + trial_vars], y_tr)
-            trials.append((get_criterion(model, criterion_name), candidate, model))
-        trials.sort(key=lambda x: x[0])
-        best_score, candidate_to_remove, best_m = trials[0]
-
-        if best_score < current_score - 1e-6:
-            selected.remove(candidate_to_remove)
-            current_score, best_model = best_score, best_m
+        if direction == "forward":
+            selected.append(cand), remaining.remove(cand)
         else:
-            break
-    return selected, best_model, current_score
-
-logit_params_path = "data/logit.par"
-run_logit_selection = True
-
-if os.path.exists(logit_params_path):
-    scelta = input(f"\nTrovato il file '{logit_params_path}'. Vuoi utilizzare i parametri salvati per Logit? [s/n]: ").strip().lower()
-    if scelta in ["s", "si", "y", "yes", ""]:
-        run_logit_selection = False
-        saved_logit_info = joblib.load(logit_params_path)
-        best_logit_vars = saved_logit_info["variables"]
-        final_criterion = saved_logit_info["criterion"]
-        logToFile(f"Caricamento configurazione Logit salvata: criterio={final_criterion}, vars={best_logit_vars}", pathDebug)
-
-if run_logit_selection:
-    results_logit = {}
-    for method in ["forward", "backward"]:
-        for criterion_name in ["aic", "bic"]:
-            key = f"{method}_{criterion_name}"
-            if method == "forward":
-                vars_sel, mod, score = forward_selection(X_train_logit, y_train, criterion_name)
-            else:
-                vars_sel, mod, score = backward_elimination(X_train_logit, y_train, criterion_name)
-            results_logit[key] = {"variables": vars_sel, "model": mod, "score": score}
-
-    final_criterion = "bic"
-    valid_results = {k: v for k, v in results_logit.items() if v["model"] is not None}
-    best_key = min(valid_results, key=lambda k: get_criterion(valid_results[k]["model"], final_criterion))
-    best_logit_vars = valid_results[best_key]["variables"]
-
-    joblib.dump({"variables": best_logit_vars, "criterion": final_criterion, "method": best_key}, logit_params_path)
-    logToFile(f"Modello Logit selezionato: {best_key} ({final_criterion.upper()}) | Vars: {len(best_logit_vars)}", pathDebug)
-
-# Ristima robusta finale Logit
-best_logit_model = fit_logit(X_train_logit[["const"] + best_logit_vars], y_train)
-
-# Test Evaluation
-X_test_logit_best = X_test_logit[["const"] + best_logit_vars].reindex(columns=["const"] + best_logit_vars, fill_value=0).astype(float)
-y_prob_logit = best_logit_model.predict(X_test_logit_best)
-y_pred_logit = (y_prob_logit >= 0.50).astype(int)
-
-logToFile("\n### REGRESSIONE LOGISTICA - VALUTAZIONE TEST SET", pathDebug)
-logToFile(f"Acc: {accuracy_score(y_test, y_pred_logit):.3f} | Prec: {precision_score(y_test, y_pred_logit):.3f} | Rec: {recall_score(y_test, y_pred_logit):.3f} | F1: {f1_score(y_test, y_pred_logit):.3f} | ROC-AUC: {roc_auc_score(y_test, y_prob_logit):.3f}", pathDebug)
-logToFile(f"\nClassification Report:\n{classification_report(y_test, y_pred_logit)}", pathDebug)
-
-# Odds Ratios
-odds_ratios = np.exp(best_logit_model.params)
-or_df = pd.DataFrame({"Coefficiente": best_logit_model.params, "Odds Ratio": odds_ratios, "p-value": best_logit_model.pvalues}).sort_values("p-value")
-logToFile(f"\nOdds Ratios e Significatività:\n{tabulate(or_df.round(4), headers='keys', tablefmt='rounded_grid')}", pathDebug)
-
-# Plot Odds Ratios e ROC
-fig, ax = plt.subplots(figsize=(10, 6))
-
-# Inserendo ["teal"] come lista si previene l'errore di parsing del colore in Pandas
-or_df.drop("const", errors="ignore")["Odds Ratio"].plot(
-    kind="barh", ax=ax, color=["teal"]
-)
-
-ax.axvline(1.0, color="gray", linestyle="--")
-ax.set_title("Odds Ratios — Regressione Logistica")
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_logit_odds_ratios.png", bbox_inches="tight")
-plt.savefig(pathPlots + "plot_logit_odds_ratios.svg", bbox_inches="tight")
-plt.close()
-
-fig, ax = plt.subplots(figsize=(7, 5))
-RocCurveDisplay.from_predictions(y_test, y_prob_logit, name="Logistic Regression", ax=ax)
-ax.set_title("ROC Curve — Logistic Regression")
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_logit_roc_curve.png")
-plt.savefig(pathPlots + "plot_logit_roc_curve.svg")
-plt.close()
+            selected.remove(cand)
+        current = score
+        log(f"[{direction.upper()}] {'+' if direction == 'forward' else '-'} {cand:<40} {crit.upper()} = {score:.3f}")
+    return selected
 
 
-# ==============================================================================
-# MODELLO 3: RANDOM FOREST
-# ==============================================================================
-
-logToFile("\n" + "="*80, pathDebug)
-logToFile("SEZIONE 3: RANDOM FOREST CON OPTIMIZED THRESHOLD", pathDebug)
-logToFile("="*80, pathDebug)
-
-preprocessor_rf = ColumnTransformer(
-    transformers=[
-        ("num", StandardScaler(), num_cols),
-        ("cat", OneHotEncoder(handle_unknown="ignore", drop="first", sparse_output=False), cat_cols)
-    ]
-)
-
-rf_pipeline_base = Pipeline([
-    ("preprocessor", preprocessor_rf),
-    ("classifier", RandomForestClassifier(n_estimators=300, random_state=random_seed, n_jobs=-1, class_weight="balanced"))
-])
-
-rf_params_path = "data/randomSearchRandomForest.par"
-run_randomsearch = True
-
-if os.path.exists(rf_params_path):
-    scelta = input(f"\nTrovato il file '{rf_params_path}'. Vuoi utilizzare i parametri salvati per Random Forest? [s/n]: ").strip().lower()
-    if scelta in ["s", "si", "y", "yes", ""]:
-        run_randomsearch = False
-        saved_rf_params = joblib.load(rf_params_path)
-        best_rf_params_clean = {k.replace("classifier__", ""): v for k, v in saved_rf_params.items()}
-        logToFile(f"Caricamento iperparametri RF da '{rf_params_path}': {saved_rf_params}", pathDebug)
-
-if run_randomsearch:
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_seed)
-    param_distributions = {
-        "classifier__max_depth": [4, 6, 8, 10, 15, None],
-        "classifier__min_samples_split": randint(2, 21),
-        "classifier__min_samples_leaf": randint(1, 21),
-        "classifier__max_features": ["sqrt", "log2", 0.3, 0.5, 0.7],
-        "classifier__class_weight": ["balanced", "balanced_subsample"]
-    }
-
-    random_search = RandomizedSearchCV(
-        estimator=rf_pipeline_base, param_distributions=param_distributions, n_iter=60,
-        scoring="f1", cv=cv, n_jobs=-1, random_state=random_seed
-    )
-
-    with tqdm_joblib(total=60 * cv.n_splits, desc="RandomSearch RF"):
-        random_search.fit(X_train_raw, y_train)
-
-    joblib.dump(random_search.best_params_, rf_params_path)
-    best_rf_params_clean = {k.replace("classifier__", ""): v for k, v in random_search.best_params_.items()}
-    logToFile(f"Migliori iperparametri RF: {best_rf_params_clean}", pathDebug)
-
-# Fitting modello finale RF
-final_rf = RandomForestClassifier(**best_rf_params_clean, n_estimators=300, oob_score=True, random_state=random_seed, n_jobs=-1)
-final_pipeline_rf = Pipeline([("preprocessor", preprocessor_rf), ("classifier", final_rf)])
-final_pipeline_rf.fit(X_train_raw, y_train)
-
-y_prob_rf = final_pipeline_rf.predict_proba(X_test_raw)[:, 1]
-
-# Tuning Soglia Ottimale
-precisions, recalls, thresholds = precision_recall_curve(y_test, y_prob_rf)
-f1_scores = 2 * precisions[:-1] * recalls[:-1] / (precisions[:-1] + recalls[:-1] + 1e-12)
-best_rf_threshold = float(thresholds[np.argmax(f1_scores)])
-
-y_pred_rf = (y_prob_rf >= best_rf_threshold).astype(int)
-
-logToFile("\n### RANDOM FOREST - VALUTAZIONE TEST SET (SOGLIA OTTIMIZZATA)", pathDebug)
-logToFile(f"Soglia applicata: {best_rf_threshold:.4f}", pathDebug)
-logToFile(f"Acc: {accuracy_score(y_test, y_pred_rf):.3f} | Prec: {precision_score(y_test, y_pred_rf):.3f} | Rec: {recall_score(y_test, y_pred_rf):.3f} | F1: {f1_score(y_test, y_pred_rf):.3f} | ROC-AUC: {roc_auc_score(y_test, y_prob_rf):.3f}", pathDebug)
-
-# Plot ROC & Precision-Recall RF
-fig, ax = plt.subplots(figsize=(7, 5))
-RocCurveDisplay.from_predictions(y_test, y_prob_rf, name="Random Forest", ax=ax)
-ax.set_title("ROC Curve — Random Forest")
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_rf_roc_curve.png")
-plt.savefig(pathPlots + "plot_rf_roc_curve.svg")
-plt.close()
+def search_logit():
+    """Le 4 combinazioni metodo x criterio -> {chiave: variabili selezionate}."""
+    out = {}
+    for direction, crit in product(["forward", "backward"], ["aic", "bic"]):
+        log(f"\n### {direction.upper()} SELECTION — {crit.upper()}")
+        out[f"{direction}_{crit}"] = stepwise(direction, crit)
+    return out
 
 
-# ==============================================================================
-# MODELLO 4: CATBOOST
-# ==============================================================================
+logit_vars = load_or_search(PAR_DIR + "logit.par", search_logit)
+# se il .par esistente ha un formato diverso da {chiave: [variabili]}, rifà la selezione e lo sovrascrive
+if not (isinstance(logit_vars, dict) and logit_vars and all(
+        isinstance(v, list) and set(v) <= set(X_tr_lg.columns) for v in logit_vars.values())):
+    log("Formato di logit.par non compatibile con le variabili attuali: rifaccio la selezione.")
+    logit_vars = search_logit()
+    joblib.dump(logit_vars, PAR_DIR + "logit.par")
+logit_models = {k: fit_logit(X_tr_lg[["const"] + v], y_tr) for k, v in logit_vars.items()}
 
-logToFile("\n" + "="*80, pathDebug)
-logToFile("SEZIONE 4: CATBOOST CLASSIFIER", pathDebug)
-logToFile("="*80, pathDebug)
+FINAL_CRITERION = "bic"  # "aic" privilegia l'adattamento, "bic" la parsimonia
+valid = {k: m for k, m in logit_models.items() if m is not None}
+if not valid:
+    raise RuntimeError("Nessun modello logit è stato stimato con successo.")
 
-COL_CAT_CB = ["Relationship_status", "Family_background", "Home_division", "Living_style"]
-COL_NUM_CB = ["CGPA", "Cost_without_study", "Age", "Current_semester"]
-X_train_cb = train_df[["male", "no_friends"] + COL_CAT_CB + COL_NUM_CB]
-X_test_cb = test_df[["male", "no_friends"] + COL_CAT_CB + COL_NUM_CB]
+log_table("RIEPILOGO MODELLI LOGIT", pd.DataFrame([{
+    "Metodo": k.replace("_", " ").title(), "N. variabili": len(logit_vars[k]),
+    "AIC train": np.nan if m is None else m.aic, "BIC train": np.nan if m is None else m.bic,
+    "Variabili selezionate": ", ".join(logit_vars[k]) or "Nessuna"} for k, m in logit_models.items()]))
 
-cb_params_path = "data/catboost.par"
-run_gridsearch_cb = True
+best_key = min(valid, key=lambda k: criterion(valid[k], FINAL_CRITERION))
+logit_model = valid[best_key]
+log(f"\n### MODELLO LOGIT SELEZIONATO: {best_key} (criterio {FINAL_CRITERION.upper()}, "
+    f"{len(logit_vars[best_key])} variabili)\n{logit_model.summary()}")
 
-if os.path.exists(cb_params_path):
-    scelta = input(f"\nTrovato il file '{cb_params_path}'. Vuoi utilizzare i parametri salvati per CatBoost? [s/n]: ").strip().lower()
-    if scelta in ["s", "si", "y", "yes", ""]:
-        run_gridsearch_cb = False
-        best_cb_params = joblib.load(cb_params_path)
-        logToFile(f"Caricamento iperparametri CatBoost da '{cb_params_path}': {best_cb_params}", pathDebug)
+# Test set: stesse colonne usate dal modello (quelle costanti nel train sono state scartate)
+logit_prob = logit_model.predict(X_te_lg[logit_model.params.index].astype(float))
+evaluate("Logistic Regression", y_te, logit_prob, 0.5,
+         {"selezione": best_key, "criterio": FINAL_CRITERION.upper(), "n_variabili": len(logit_vars[best_key])})
 
-def build_cb_model(depth, lr, l2, iterations=300):
-    return CatBoostClassifier(
-        iterations=iterations, depth=depth, learning_rate=lr, l2_leaf_reg=l2,
-        cat_features=tuple(COL_CAT_CB), auto_class_weights="Balanced", random_seed=random_seed, verbose=0, allow_writing_files=False
-    )
-
-if run_gridsearch_cb:
-    cv_rep = RepeatedStratifiedKFold(n_splits=5, n_repeats=2, random_state=random_seed)
-    grid_cb = []
-    for depth, l2 in product([4, 6, 8], [10, 30]):
-        m = build_cb_model(depth, 0.03, l2)
-        scores = cross_val_score(m, X_train_cb, y_train, cv=cv_rep, scoring="roc_auc")
-        grid_cb.append((scores.mean(), depth, l2))
-    grid_cb.sort(reverse=True)
-    best_cb_params = {"depth": grid_cb[0][1], "l2_leaf_reg": grid_cb[0][2], "learning_rate": 0.03}
-    joblib.dump(best_cb_params, cb_params_path)
-    logToFile(f"Migliori iperparametri CatBoost: {best_cb_params}", pathDebug)
-
-model_cb = build_cb_model(int(best_cb_params["depth"]), 0.03, int(best_cb_params["l2_leaf_reg"]))
-model_cb.fit(X_train_cb, y_train)
-
-# Soglia ottimale CatBoost
-cv_cb = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_seed)
-p_cv_cb = cross_val_predict(model_cb, X_train_cb, y_train, cv=cv_cb, method="predict_proba")[:, 1]
-
-thresholds_cb = np.arange(0.1, 0.9, 0.02)
-f1_cb_list = [f1_score(y_train, (p_cv_cb >= t).astype(int)) for t in thresholds_cb]
-best_cb_threshold = float(thresholds_cb[np.argmax(f1_cb_list)])
-
-y_prob_cb = model_cb.predict_proba(X_test_cb)[:, 1]
-y_pred_cb = (y_prob_cb >= best_cb_threshold).astype(int)
-
-logToFile("\n### CATBOOST - VALUTAZIONE TEST SET (SOGLIA OTTIMIZZATA)", pathDebug)
-logToFile(f"Soglia applicata: {best_cb_threshold:.4f}", pathDebug)
-logToFile(f"Acc: {accuracy_score(y_test, y_pred_cb):.3f} | Prec: {precision_score(y_test, y_pred_cb):.3f} | Rec: {recall_score(y_test, y_pred_cb):.3f} | F1: {f1_score(y_test, y_pred_cb):.3f} | ROC-AUC: {roc_auc_score(y_test, y_prob_cb):.3f}", pathDebug)
-
-# Plot ROC CatBoost
-fig, ax = plt.subplots(figsize=(7, 5))
-RocCurveDisplay.from_predictions(y_test, y_prob_cb, name="CatBoost", ax=ax)
-ax.set_title("ROC Curve — CatBoost")
-plt.tight_layout()
-plt.savefig(pathPlots + "plot_catboost_roc_curve.png")
-plt.savefig(pathPlots + "plot_catboost_roc_curve.svg")
-plt.close()
+or_tab = pd.DataFrame({"Coefficiente": logit_model.params, "Odds Ratio": np.exp(logit_model.params),
+                       "p-value": logit_model.pvalues}).sort_values("p-value")
+log_table("ODDS RATIO REGRESSIONE LOGISTICA", or_tab, floatfmt=".4f", index=True)
 
 
-# ==============================================================================
-# SEZIONE FINALE: ESECUZIONE COMPARATIVA DI TUTTI I MODELLI DA FILE .PAR
-# ==============================================================================
+### ============================================================
+### CONFRONTO FINALE TRA I MODELLI
+### ============================================================
+COLORS = {"Decision Tree": "tab:green", "Random Forest": "tab:blue", "CatBoost": "tab:orange",
+          "Logistic Regression": "tab:red"}
 
-logToFile("\n" + "="*80, pathDebug)
-logToFile("SEZIONE 5: CONFRONTO FINALE DI TUTTI I MODELLI SALVATI DA FILE .PAR", pathDebug)
-logToFile("="*80, pathDebug)
+metrics_df = pd.DataFrame({
+    name: {"Accuracy": accuracy_score(r["y_true"], r["y_pred"]),
+           "Precision": precision_score(r["y_true"], r["y_pred"], zero_division=0),
+           "Recall": recall_score(r["y_true"], r["y_pred"]),
+           "F1": f1_score(r["y_true"], r["y_pred"]),
+           "ROC-AUC": roc_auc_score(r["y_true"], r["y_prob"])}
+    for name, r in model_results.items()
+}).T
+params_df = pd.DataFrame({
+    "Modello": list(model_results),
+    "Soglia": [r["threshold"] for r in model_results.values()],
+    "Iperparametri": [str(r["params"]) for r in model_results.values()],
+})
+log_table("CONFRONTO MODELLI - METRICHE (TEST SET)", metrics_df, floatfmt=".4f", index=True)
+log_table("CONFRONTO MODELLI - PARAMETRI E SOGLIE", params_df, floatfmt=".3f")
 
-comparison_metrics = []
+# Plot 1: curve ROC a confronto
+plt.figure(figsize=(8, 7))
+for name, r in model_results.items():
+    fpr, tpr, _ = roc_curve(r["y_true"], r["y_prob"])
+    plt.plot(fpr, tpr, color=COLORS[name], lw=2, label=f"{name} (AUC={roc_auc_score(r['y_true'], r['y_prob']):.3f})")
+plt.plot([0, 1], [0, 1], "k--", label="Caso")
+plt.xlabel("False positive rate")
+plt.ylabel("True positive rate")
+plt.title("Curve ROC a confronto (test set)")
+plt.legend(loc="lower right")
+save("plot_confronto_roc", svg=True, dpi=150)
 
-# 1. Decision Tree
-if os.path.exists(grid_params_path):
-    params_dt = joblib.load(grid_params_path)
-    dt_final = DecisionTreeClassifier(**params_dt, class_weight="balanced", random_state=random_seed).fit(X_train_encoded, y_train)
-    p_dt = dt_final.predict_proba(X_test_encoded)[:, 1]
-    y_dt_pred = (p_dt >= 0.5).astype(int)
-    comparison_metrics.append({
-        "Modello": "Decision Tree",
-        "Accuracy": accuracy_score(y_test, y_dt_pred),
-        "Precision": precision_score(y_test, y_dt_pred),
-        "Recall": recall_score(y_test, y_dt_pred),
-        "F1-Score": f1_score(y_test, y_dt_pred),
-        "ROC-AUC": roc_auc_score(y_test, p_dt)
-    })
+# Plot 2: metriche sul test set a confronto
+ax = metrics_df.T.plot(kind="bar", figsize=(11, 6), color=[COLORS[m] for m in metrics_df.index], width=0.8)
+for cont in ax.containers:
+    ax.bar_label(cont, fmt="%.2f", fontsize=8, padding=2)
+ax.set(title="Metriche sul test set", ylabel="Valore", ylim=(0, 1.1))
+ax.tick_params(axis="x", rotation=0)
+ax.legend(title="Modello")
+save("plot_confronto_metriche", svg=True, dpi=150)
 
-# 2. Logistic Regression
-if os.path.exists(logit_params_path):
-    logit_info = joblib.load(logit_params_path)
-    vars_l = logit_info["variables"]
-    m_logit = fit_logit(X_train_logit[["const"] + vars_l], y_train)
-    X_t_l = X_test_logit[["const"] + vars_l].reindex(columns=["const"] + vars_l, fill_value=0).astype(float)
-    p_logit = m_logit.predict(X_t_l)
-    y_l_pred = (p_logit >= 0.5).astype(int)
-    comparison_metrics.append({
-        "Modello": "Logistic Regression",
-        "Accuracy": accuracy_score(y_test, y_l_pred),
-        "Precision": precision_score(y_test, y_l_pred),
-        "Recall": recall_score(y_test, y_l_pred),
-        "F1-Score": f1_score(y_test, y_l_pred),
-        "ROC-AUC": roc_auc_score(y_test, p_logit)
-    })
-
-# 3. Random Forest
-if os.path.exists(rf_params_path):
-    params_rf = joblib.load(rf_params_path)
-    clean_rf_p = {k.replace("classifier__", ""): v for k, v in params_rf.items()}
-    rf_pipe = Pipeline([("preprocessor", preprocessor_rf), ("classifier", RandomForestClassifier(**clean_rf_p, n_estimators=300, random_state=random_seed, n_jobs=-1))])
-    rf_pipe.fit(X_train_raw, y_train)
-    p_rf = rf_pipe.predict_proba(X_test_raw)[:, 1]
-    y_rf_pred = (p_rf >= best_rf_threshold).astype(int)
-    comparison_metrics.append({
-        "Modello": "Random Forest",
-        "Accuracy": accuracy_score(y_test, y_rf_pred),
-        "Precision": precision_score(y_test, y_rf_pred),
-        "Recall": recall_score(y_test, y_rf_pred),
-        "F1-Score": f1_score(y_test, y_rf_pred),
-        "ROC-AUC": roc_auc_score(y_test, p_rf)
-    })
-
-# 4. CatBoost
-if os.path.exists(cb_params_path):
-    params_cb = joblib.load(cb_params_path)
-    cb_m = build_cb_model(int(params_cb["depth"]), 0.03, int(params_cb["l2_leaf_reg"]))
-    cb_m.fit(X_train_cb, y_train)
-    p_cb = cb_m.predict_proba(X_test_cb)[:, 1]
-    y_cb_pred = (p_cb >= best_cb_threshold).astype(int)
-    comparison_metrics.append({
-        "Modello": "CatBoost",
-        "Accuracy": accuracy_score(y_test, y_cb_pred),
-        "Precision": precision_score(y_test, y_cb_pred),
-        "Recall": recall_score(y_test, y_cb_pred),
-        "F1-Score": f1_score(y_test, y_cb_pred),
-        "ROC-AUC": roc_auc_score(y_test, p_cb)
-    })
-
-# Tabella Comparativa Finale
-comp_df = pd.DataFrame(comparison_metrics)
-logToFile("\n### TABELLA COMPARATIVA METRICHE (TEST SET)", pathDebug)
-logToFile(tabulate(comp_df.round(4), headers="keys", tablefmt="rounded_grid", showindex=False), pathDebug)
-
-# Plot Sovrapposto delle Curve ROC di Tutti i Modelli
-fig, ax = plt.subplots(figsize=(10, 7))
-if 'p_dt' in locals():
-    fpr, tpr, _ = roc_curve(y_test, p_dt)
-    ax.plot(fpr, tpr, label=f"Decision Tree (AUC = {roc_auc_score(y_test, p_dt):.3f})")
-
-if 'p_logit' in locals():
-    fpr, tpr, _ = roc_curve(y_test, p_logit)
-    ax.plot(fpr, tpr, label=f"Logistic Regression (AUC = {roc_auc_score(y_test, p_logit):.3f})")
-
-if 'p_rf' in locals():
-    fpr, tpr, _ = roc_curve(y_test, p_rf)
-    ax.plot(fpr, tpr, label=f"Random Forest (AUC = {roc_auc_score(y_test, p_rf):.3f})")
-
-if 'p_cb' in locals():
-    fpr, tpr, _ = roc_curve(y_test, p_cb)
-    ax.plot(fpr, tpr, label=f"CatBoost (AUC = {roc_auc_score(y_test, p_cb):.3f})")
-
-ax.plot([0, 1], [0, 1], "k--", label="Casuale")
-ax.set_xlabel("False Positive Rate (FPR)")
-ax.set_ylabel("True Positive Rate (TPR)")
-ax.set_title("Confronto Curve ROC — Tutti i Modelli (.par)")
-ax.legend(loc="lower right")
-ax.grid(True, alpha=0.3)
-plt.tight_layout()
-
-plt.savefig(pathPlots + "plot_all_models_roc_curve.png", bbox_inches="tight")
-plt.savefig(pathPlots + "plot_all_models_roc_curve.svg", bbox_inches="tight")
-plt.close()
-
-logToFile("\n>>> ESECUZIONE COMPLETATA CON SUCCESSO <<<", pathDebug)
-
+log(f"\n### Grafici di confronto salvati in {PLOTS}")
