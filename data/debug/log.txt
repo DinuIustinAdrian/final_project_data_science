@@ -705,7 +705,7 @@ Dep. Variable:                    dep   No. Observations:                 3571
 Model:                          Logit   Df Residuals:                     3561
 Method:                           MLE   Df Model:                            9
 Date:                Fri, 30 Oct 2026   Pseudo R-squ.:                  0.1223
-Time:                        12:04:41   Log-Likelihood:                -1825.3
+Time:                        14:46:34   Log-Likelihood:                -1825.3
 converged:                       True   LL-Null:                       -2079.7
 Covariance Type:            nonrobust   LLR p-value:                8.055e-104
 ==================================================================================================
